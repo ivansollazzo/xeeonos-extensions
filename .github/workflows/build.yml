@@ -4,7 +4,7 @@ name: Build
 # them, and on a push to a channel branch (after a merge) publishes them,
 # signed, as ghcr.io/<this repository>:<version>, next to the system:
 #   xeeonos_<version>.<name>.xext, <name>.conf, SHA256SUMS, SHA256SUMS.gpg
-# xctl downloads them from there (sudo xctl ext enable <name>) and, at each
+# xctl downloads them from there (sudo xctl extensions enable <name>) and, at each
 # update, the ones turned on for the new version.
 #
 # Pull requests (among them the ones "Nuova build di XeeonOS" opens, which

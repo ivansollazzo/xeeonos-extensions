@@ -10,7 +10,7 @@ runs over RMI4/SMBus (every 15 ms, gestures intact, TrackPoint still
 working). Tested by the project on the T14 Gen 2a AMD, T14 Gen 1 AMD and E495.
 
 ```
-sudo xctl ext enable thinkpad-t14-amd-touchpad
+sudo xctl extensions enable thinkpad-t14-amd-touchpad
 systemctl reboot
 sudo thinkpad-t14-amd-touchpad-check   # are the patched modules in use, is the pad on RMI4?
 grep Phys /proc/bus/input/devices      # the Synaptics device on an "rmi4-" path
@@ -32,7 +32,7 @@ stop applying, CI fails instead of shipping the stock modules silently.
 The modules are not signed. The Arch kernel loads them anyway (it marks
 itself "tainted"), also with Secure Boot on.
 
-To go back: `sudo xctl ext remove thinkpad-t14-amd-touchpad` and restart.
+To go back: `sudo xctl extensions remove thinkpad-t14-amd-touchpad` and restart.
 
 ## Tests
 

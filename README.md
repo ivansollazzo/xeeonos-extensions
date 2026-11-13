@@ -2,7 +2,7 @@
 
 The optional system extensions of [XeeonOS](https://github.com/ivansollazzo/xeeonos):
 `systemd-sysext` images (`.xext`) that lay extra software over the sealed
-`/usr`, turned on with `sudo xctl ext enable <name>`. The extensions included
+`/usr`, turned on with `sudo xctl extensions enable <name>`. The extensions included
 in the system image (flatpak, printing) live in the main repository.
 
 | Extension | What |

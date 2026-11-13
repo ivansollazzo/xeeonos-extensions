@@ -1,5 +1,5 @@
 #!/bin/sh
-# The extension arrives during the boot (xctl ext activate), when udev may
+# The extension arrives during the boot (xctl extensions activate), when udev may
 # already have loaded the stock i2c-piix4 and psmouse: load the patched ones
 # instead. psmouse goes first and comes back last, so the touchpad and the
 # TrackPoint come back on the new transport.

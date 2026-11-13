@@ -11,7 +11,7 @@ the same Arch snapshot as the system:
 Turn on one of the two:
 
 ```
-sudo xctl ext enable rocm-sdk
+sudo xctl extensions enable rocm-sdk
 systemctl reboot
 rocminfo                # the GPU is listed as an agent (gfx...)
 hipcc --version
