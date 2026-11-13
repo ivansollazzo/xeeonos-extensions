@@ -40,15 +40,26 @@ it is made from that version's own package list and Arch snapshot.
 
 1. XeeonOS publishes a build (experimental, testing, or a stable release)
    with its package list, and tells this repository.
-2. The workflow **Nuova build di XeeonOS** opens a pull request towards the
-   branch of that channel, pointing `xeeonos.target` at the new version.
-3. Its CI (**Build**) builds every extension against that version and checks
-   it (`tools/check.sh`). When it is green, the pull request **merges by
-   itself**, on every channel, stable too.
-4. The merge publishes the extensions, signed with the XeeonOS update key, as
-   `ghcr.io/ivansollazzo/xeeonos-extensions:<version>`. `xctl` downloads them
-   from there; at an update, it waits for the extensions turned on to be
-   published for the new version.
+2. The workflow **Build** starts by itself: one job per extension, side by
+   side. Each one is built against that version (`tools/mkext.sh`), its image
+   is checked (`tools/check.sh`), and it is tried on that very XeeonOS in a
+   virtual machine with KVM (`tools/boot-check.sh`: xctl downloads it from a
+   signed source and turns it on, then after a restart its own `test` runs).
+3. Each extension that is green is **published at once**, without waiting for
+   the others, as `ghcr.io/ivansollazzo/xeeonos-extensions:<version>.<name>`.
+   The workflow **Indice estensioni** then lists all the ones published for
+   that version, signed with the XeeonOS update key, in
+   `ghcr.io/ivansollazzo/xeeonos-extensions:<version>`: that is what `xctl`
+   reads. An extension that fails is simply not available for that version
+   yet; "Re-run failed jobs" builds only that one again. At an update, `xctl`
+   waits for the extensions turned on to be published for the new version.
+
+Changes to this repository go through pull requests, as usual: their CI
+builds and tries the extensions they change (all of them when `tools/` or the
+workflows change) on the newest XeeonOS of the target channel, without
+publishing. After the merge, the same extensions are published for that
+version. **Run workflow** on Build does it by hand (a version, some or all
+extensions).
 
 ## Making one
 
@@ -63,23 +74,29 @@ One directory per extension in `extensions/<name>/`:
   `KeepDevelopment=`, `Reinstall=`;
 - `files/`: files of its own (only under `/usr`);
 - `build.sh` (optional): an extra build step, run in the Arch container;
-- `check`: paths that must be in the image (`tools/check.sh`).
+- `check`: paths that must be in the image (`tools/check.sh`);
+- `test` (optional): commands run as root on XeeonOS with the extension on
+  (`tools/boot-check.sh`); the first one that fails fails the test.
 
 ```
 tools/fetch-system.sh <version> sys/             # the system's package list
 zstd -d sys/xeeonos_<version>.pkgdb.tar.zst -o pkgdb.tar
 tools/mkext.sh pkgdb.tar <version> <snapshot> out [name...]
 tools/check.sh <version> out [name...]
+tools/fetch-system.sh --boot <version> sys/      # + the system images
+tools/boot-check.sh <version> <name> out sys/    # needs qemu, ovmf, mtools
 ```
 
 ## Setup (once)
 
 - Secrets (Settings → Secrets and variables → Actions): `XEEONOS_SIGNING_KEY`
-  (the same update signing key as the main repository) and
-  `XEEONOS_BOT_TOKEN` (the same token, with access to both repositories).
-- Settings → General → "Allow auto-merge".
+  (the same update signing key as the main repository). The main
+  repository's `XEEONOS_BOT_TOKEN` must reach this repository (it sends the
+  signal of a new build).
 - A ruleset on `experimental`, `testing`, `stable` requiring the check
-  "Build and check the extensions" (auto-merge waits for it).
+  "Build and check the extensions".
+- The package `xeeonos-extensions` on ghcr.io public, after the first
+  publication (xctl downloads without logging in).
 
 Branches = channels, as in the main repository: `experimental` now, later
 `testing` and `stable`.

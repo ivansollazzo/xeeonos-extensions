@@ -1,0 +1,8 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). No AMD GPU there: the runtime is in place and its
+# libraries are found. Fails on the first command that fails.
+test -d /opt/rocm/lib
+ls /opt/rocm/lib/libamdhip64.so*
+if ldd /usr/bin/rocminfo | grep 'not found'; then exit 1; fi
+if ldd /opt/rocm/lib/libamdhip64.so | grep 'not found'; then exit 1; fi
+command -v rocm-smi

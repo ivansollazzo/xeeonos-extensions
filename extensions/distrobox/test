@@ -1,0 +1,4 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). Fails on the first command that fails.
+distrobox version
+podman info --format 'runtime {{.Host.OCIRuntime.Name}}, storage {{.Store.GraphDriverName}}'
