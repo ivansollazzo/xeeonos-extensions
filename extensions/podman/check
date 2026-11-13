@@ -1,0 +1,5 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/podman
+usr/share/factory/etc/containers/policy.json
+usr/share/factory/etc/containers/registries.conf
+usr/lib/tmpfiles.d/xeeonos-podman.conf

@@ -1,0 +1,6 @@
+# Paths that must be in the image (tools/check.sh).
+usr/lib/xeeonos/opt/rocm/bin/hipcc
+usr/bin/hipcc
+usr/include/stdio.h
+usr/include/linux/types.h
+usr/bin/gcc

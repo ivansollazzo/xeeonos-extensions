@@ -1,0 +1,4 @@
+# Paths that must be in the image (tools/check.sh).
+usr/lib/xeeonos/opt/rocm
+usr/bin/rocminfo
+usr/bin/rocm-smi
