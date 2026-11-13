@@ -7,6 +7,8 @@ in the system image (flatpak, printing) live in the main repository.
 
 | Extension | What |
 | --- | --- |
+| `podman` | Containers without root: each user has their own |
+| `distrobox` | Other distributions in a container that feels like the system (brings podman) |
 | `docker` | The Docker engine, Compose and Buildx; users of the group `docker` use it without sudo |
 | `rocm` | AMD ROCm runtimes (HIP, OpenCL), see [docs/rocm.md](docs/rocm.md) |
 | `rocm-sdk` | AMD ROCm SDK: `hipcc`, math libraries, headers (several GB) |

@@ -1,0 +1,6 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/distrobox
+usr/bin/distrobox-create
+usr/bin/podman
+usr/share/factory/etc/containers/policy.json
+usr/lib/tmpfiles.d/xeeonos-distrobox.conf
