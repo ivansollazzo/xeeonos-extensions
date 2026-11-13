@@ -1,0 +1,8 @@
+#!/bin/sh
+# Cleanup= of the extension virtualization: when it is turned off or
+# removed, nobody stays in the group libvirt. Virtual machines and their
+# disks (/var/lib/libvirt) are kept.
+set -u
+for user in $(getent group libvirt | cut -d: -f4 | tr ',' ' '); do
+    gpasswd --delete "$user" libvirt
+done

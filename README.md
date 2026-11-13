@@ -12,6 +12,7 @@ in the system image (flatpak, printing) live in the main repository.
 | `docker` | The Docker engine, Compose and Buildx; users of the group `docker` use it without sudo |
 | `rocm` | AMD ROCm runtimes (HIP, OpenCL), see [docs/rocm.md](docs/rocm.md) |
 | `rocm-sdk` | AMD ROCm SDK: `hipcc`, math libraries, headers (several GB) |
+| `virtualization` | Virtual machines: libvirt, QEMU/KVM, UEFI and TPM, for virt-manager (Flatpak), see [docs/virtualization.md](docs/virtualization.md) |
 | `thinkpad-t14-amd-touchpad` | Touchpad of the ThinkPad T14/P14s AMD and E495 over SMBus (patched kernel modules), see [docs/thinkpad-t14-amd-touchpad.md](docs/thinkpad-t14-amd-touchpad.md) |
 
 ## What can be an extension

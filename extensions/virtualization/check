@@ -1,0 +1,13 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/virsh
+usr/bin/libvirtd
+usr/bin/qemu-system-x86_64
+usr/bin/swtpm
+usr/bin/dnsmasq
+usr/share/edk2/x64/OVMF_CODE.4m.fd
+usr/lib/systemd/system/libvirtd.socket
+usr/lib/systemd/system/sockets.target.wants/libvirtd.socket
+usr/share/factory/etc/libvirt/libvirtd.conf
+usr/lib/tmpfiles.d/xeeonos-virtualization.conf
+usr/lib/xeeonos/extensions/virtualization/setup
+usr/lib/xeeonos/extensions/virtualization/cleanup

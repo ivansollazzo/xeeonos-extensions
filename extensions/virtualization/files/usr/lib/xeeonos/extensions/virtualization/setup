@@ -1,0 +1,8 @@
+#!/bin/sh
+# Setup= of the extension virtualization: once, at the first boot with it
+# on. The administrators (group wheel) join the group libvirt, so they can
+# manage virtual machines without sudo (virt-manager, virsh).
+set -u
+for user in $(getent group wheel | cut -d: -f4 | tr ',' ' '); do
+    usermod --append --groups libvirt "$user" && echo "virtualization: $user can use libvirt"
+done
