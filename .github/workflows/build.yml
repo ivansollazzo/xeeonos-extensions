@@ -47,6 +47,11 @@ concurrency:
 permissions:
   contents: read
 
+# bash -eo pipefail: a failing step stays failed even when piped into tee.
+defaults:
+  run:
+    shell: bash
+
 jobs:
   plan:
     name: What to build

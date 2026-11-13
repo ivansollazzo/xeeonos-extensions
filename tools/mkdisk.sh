@@ -55,7 +55,7 @@ sfdisk --quiet "$disk" <<TABLE
 label: gpt
 start=1MiB, size=${esp_mib}MiB, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name="esp"
 size=${verity_mib}MiB, type=77FF5F63-E7B6-4633-ACF4-1565B864C0E6, uuid=$(uuid "$verity"), name="xeeonos_$version"
-size=${usr_mib}MiB, type=8484680C-952F-4EF3-A9C5-D2B0D65F3A43, uuid=$(uuid "$usr"), name="xeeonos_$version"
+size=${usr_mib}MiB, type=8484680C-9521-48C6-9C11-B0720656F69E, uuid=$(uuid "$usr"), name="xeeonos_$version"
 TABLE
 put() { # <file> <offset in MiB>
     dd if="$1" of="$disk" bs=1M seek="$2" conv=sparse,notrunc status=none
