@@ -71,6 +71,7 @@ One directory per extension in `extensions/<name>/`:
   it is on), `Setup=`, `Cleanup=`, `Boot=` (scripts in
   `files/usr/lib/xeeonos/extensions/<name>/`: once, when turned off, every
   boot; see docs/extensions.md in the XeeonOS repository),
+  `Live=no` (kernel modules: on and off only at the next restart),
   `KeepDevelopment=`, `Reinstall=`;
 - `files/`: files of its own (only under `/usr`);
 - `build.sh` (optional): an extra build step, run in the Arch container;

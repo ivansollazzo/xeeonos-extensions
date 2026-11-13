@@ -3,6 +3,7 @@
 # (KVM when the runner has it): a disk made from the published system
 # (tools/mkdisk.sh), booted with tools/boot-test.sh of the main repository.
 #   boot 1: xctl downloads the extension from a signed source and turns it on
+#           (at once, or from the next restart: both are accepted)
 #   boot 2: it is merged into /usr, its units and hooks have run, and its
 #           own test passes (extensions/<name>/test, run as root, if any)
 #
@@ -46,7 +47,10 @@ boot() { # <step> <script> <boot-test options...>
     printf '%s\n' "$2" > "$work/step-$n.sh"
     shift 2
     echo "::group::$name: boot $n"
-    TIMEOUT=${TIMEOUT:-1200} "$work/boot-test.sh" --credential "ext-test=$work/step-$n.sh" \
+    # A disk large enough for the biggest extension (rocm-sdk, about 12 GB,
+    # downloaded into the data partition next to two 8 GB /usr slots); the
+    # file is sparse, so only what is written takes room on the runner.
+    DISK_SIZE=${DISK_SIZE:-64G} TIMEOUT=${TIMEOUT:-1200} "$work/boot-test.sh" --credential "ext-test=$work/step-$n.sh" \
         --run "/bin/bash /run/credentials/@system/ext-test" "$@" \
         "$work/disk.raw" "$work/serial-$n.log"
     echo "::endgroup::"
@@ -58,7 +62,7 @@ systemctl start network-online.target
 xctl \$x enable $name --from http://10.0.2.2:8080 --keyring /run/credentials/@system/xctl.keyring
 " --http "$http" --credential "xctl.keyring=$work/keyring.gpg" \
     --expect "Signature: valid" \
-    --expect "Extension $name: on, from the next restart"
+    --expect "Extension $name: on"
 
 test_options=()
 if [[ -f extensions/$name/test ]]; then
