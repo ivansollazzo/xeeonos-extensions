@@ -47,7 +47,10 @@ boot() { # <step> <script> <boot-test options...>
     printf '%s\n' "$2" > "$work/step-$n.sh"
     shift 2
     echo "::group::$name: boot $n"
-    TIMEOUT=${TIMEOUT:-1200} "$work/boot-test.sh" --credential "ext-test=$work/step-$n.sh" \
+    # A disk large enough for the biggest extension (rocm-sdk, about 12 GB,
+    # downloaded into the data partition next to two 8 GB /usr slots); the
+    # file is sparse, so only what is written takes room on the runner.
+    DISK_SIZE=${DISK_SIZE:-64G} TIMEOUT=${TIMEOUT:-1200} "$work/boot-test.sh" --credential "ext-test=$work/step-$n.sh" \
         --run "/bin/bash /run/credentials/@system/ext-test" "$@" \
         "$work/disk.raw" "$work/serial-$n.log"
     echo "::endgroup::"
