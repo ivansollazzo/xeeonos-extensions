@@ -14,6 +14,25 @@ in the system image (flatpak, printing) live in the main repository.
 | `rocm-sdk` | AMD ROCm SDK: `hipcc`, math libraries, headers (several GB) |
 | `thinkpad-t14-amd-touchpad` | Touchpad of the ThinkPad T14/P14s AMD and E495 over SMBus (patched kernel modules), see [docs/thinkpad-t14-amd-touchpad.md](docs/thinkpad-t14-amd-touchpad.md) |
 
+## What can be an extension
+
+Only what needs to be part of the system itself:
+
+- **drivers and kernel modules** (e.g. `thinkpad-t14-amd-touchpad`);
+- **system services** that run as root or talk to the kernel (e.g. `docker`,
+  `podman`);
+- **hardware runtimes** that applications use from the system (e.g. `rocm`).
+
+Not an extension:
+
+- **applications**: Flatpak (Discover) or AppImage;
+- **developer tools and any other package**: in a container, with
+  `distrobox`.
+
+An extension that bundles an application with a system part (e.g. a virtual
+machine manager) ships only the system part here; the application comes
+from Flatpak.
+
 ## Every XeeonOS build gets its own
 
 An extension fits **exactly one** XeeonOS version (`SYSEXT_LEVEL=<version>`):
@@ -37,7 +56,11 @@ One directory per extension in `extensions/<name>/`:
 
 - `extension.conf`: `Description=`, `Special=`, `Default=no`, `Packages=`
   (Arch packages: only what the system does not already have goes in),
-  `Enable=` (units to start with it), `KeepDevelopment=`, `Reinstall=`;
+  `Enable=` (units to start with it), `Disable=` (system units masked while
+  it is on), `Setup=`, `Cleanup=`, `Boot=` (scripts in
+  `files/usr/lib/xeeonos/extensions/<name>/`: once, when turned off, every
+  boot; see docs/extensions.md in the XeeonOS repository),
+  `KeepDevelopment=`, `Reinstall=`;
 - `files/`: files of its own (only under `/usr`);
 - `build.sh` (optional): an extra build step, run in the Arch container;
 - `check`: paths that must be in the image (`tools/check.sh`).
