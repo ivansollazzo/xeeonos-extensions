@@ -1,108 +1,211 @@
 name: Build
 
-# Builds the extensions for the XeeonOS build named in xeeonos.target, checks
-# them, and on a push to a channel branch (after a merge) publishes them,
-# signed, as ghcr.io/<this repository>:<version>, next to the system:
-#   xeeonos_<version>.<name>.xext, <name>.conf, SHA256SUMS, SHA256SUMS.gpg
-# xctl downloads them from there (sudo xctl extensions enable <name>) and, at each
-# update, the ones turned on for the new version.
+# Every extension on its own: built for one XeeonOS version, checked, tried on
+# that very system in a virtual machine (KVM), and published as soon as it is
+# green, without waiting for the others. A broken one does not hold the rest
+# back, and "Re-run failed jobs" builds only that one again.
 #
-# Pull requests (among them the ones "Nuova build di XeeonOS" opens, which
-# merge by themselves when this is green) build and check, never publish.
+#   XeeonOS publishes a build   all extensions, for that version (the main
+#                               repository sends "xeeonos-published"), published
+#   push to a channel branch    the extensions the push changes (all of them if
+#                               it changes tools/ or the workflows), for the
+#                               newest version of that channel, published
+#   pull request                the ones it changes, newest version of the
+#                               target channel: built and tried, not published
+#   by hand (Run workflow)      a version (default: the newest) and some or all
+#                               extensions, published
+#
+# Published: ghcr.io/<this repository>:<version>.<name> per extension
+# (tools/publish.sh); then the workflow "Indice estensioni" lists them all,
+# signed, in ghcr.io/<this repository>:<version>, which is what xctl reads.
 on:
+  repository_dispatch:
+    types: [xeeonos-published]
   push:
     branches: [experimental, testing, stable]
   pull_request:
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Channel
+        type: choice
+        options: [experimental, testing, stable]
+      version:
+        description: XeeonOS version (empty = the newest of the channel)
+        required: false
+      extensions:
+        description: Extensions, separated by spaces (empty = all)
+        required: false
 
 concurrency:
-  group: build-${{ github.ref }}
-  cancel-in-progress: true
+  # A pull request: only its newest push. Anything else runs to the end
+  # (every run publishes what it built; the signed list is made again from
+  # all of them each time).
+  group: build-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.client_payload.version || inputs.version || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  extensions:
-    name: Build and check the extensions
+  plan:
+    name: What to build
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      channel: ${{ steps.plan.outputs.channel }}
+      names: ${{ steps.plan.outputs.names }}
+      ref: ${{ steps.plan.outputs.ref }}
+      publish: ${{ steps.plan.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_VERSION: ${{ github.event.client_payload.version }}
+          DISPATCH_CHANNEL: ${{ github.event.client_payload.channel }}
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_NAMES: ${{ inputs.extensions }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_BASE_REF: ${{ github.base_ref }}
+        run: |
+          case $EVENT in
+            repository_dispatch)
+              if [[ ! $DISPATCH_VERSION =~ ^[0-9]{2}\.[0-9]{1,2}([.-][A-Za-z0-9.]+)?$ ]] ||
+                 [[ ! $DISPATCH_CHANNEL =~ ^(experimental|testing|stable)$ ]]; then
+                echo "::error::bad version or channel: '$DISPATCH_VERSION' '$DISPATCH_CHANNEL'"
+                exit 1
+              fi
+              # The recipes of that channel's branch.
+              git checkout --quiet "origin/$DISPATCH_CHANNEL"
+              ref=$DISPATCH_CHANNEL publish=yes
+              tools/plan.sh "$DISPATCH_CHANNEL" "$DISPATCH_VERSION" "" > plan.txt ;;
+            workflow_dispatch)
+              git checkout --quiet "origin/$INPUT_CHANNEL"
+              ref=$INPUT_CHANNEL publish=yes
+              tools/plan.sh "$INPUT_CHANNEL" "$INPUT_VERSION" "$INPUT_NAMES" > plan.txt ;;
+            push)
+              ref=$GITHUB_SHA publish=yes
+              tools/plan.sh "$GITHUB_REF_NAME" "" "" "$BEFORE" "$GITHUB_SHA" > plan.txt ;;
+            pull_request)
+              channel=$PR_BASE_REF
+              [[ $channel =~ ^(experimental|testing|stable)$ ]] || channel=experimental
+              ref=$GITHUB_SHA publish=no
+              tools/plan.sh "$channel" "" "" "$PR_BASE" HEAD > plan.txt ;;
+          esac
+          cat plan.txt >> "$GITHUB_OUTPUT"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          {
+            echo "XeeonOS $(sed -n 's/^version=//p' plan.txt) ($(sed -n 's/^channel=//p' plan.txt))"
+            echo
+            echo "Extensions: $(sed -n 's/^names=//p' plan.txt)"
+            echo
+            echo "Publish: $publish"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  extension:
+    name: ${{ matrix.name }}
+    needs: plan
+    if: needs.plan.outputs.names != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
     permissions:
       contents: read
       packages: write
+      actions: write
+    strategy:
+      fail-fast: false
+      matrix:
+        name: ${{ fromJSON(needs.plan.outputs.names) }}
+    env:
+      VERSION: ${{ needs.plan.outputs.version }}
+      CHANNEL: ${{ needs.plan.outputs.channel }}
+      NAME: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
 
-      - name: Target XeeonOS build
-        run: |
-          source xeeonos.target
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "CHANNEL=$CHANNEL" >> "$GITHUB_ENV"
-          if [[ -z $VERSION ]]; then
-            echo "No XeeonOS build targeted yet (xeeonos.target): nothing to build." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Extensions for XeeonOS $VERSION ($CHANNEL)" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Free disk space (rocm-sdk is several GB)
-        if: env.VERSION != ''
+      - name: Tools and disk space (rocm-sdk is several GB)
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
           sudo apt-get update
-          sudo apt-get install --assume-yes --no-install-recommends zstd erofs-utils jq
-          df -h /
+          sudo apt-get install --assume-yes --no-install-recommends \
+            zstd erofs-utils jq qemu-system-x86 ovmf dosfstools mtools fdisk
+          # The runner's second disk has the room: work there.
+          sudo mkdir -p /mnt/work
+          sudo chown "$(id -u):$(id -g)" /mnt/work
+          echo "WORK=/mnt/work" >> "$GITHUB_ENV"
+          df -h / /mnt
 
-      - name: The system's package list
-        if: env.VERSION != ''
+      - name: Let QEMU use KVM
         run: |
-          tools/fetch-system.sh "$VERSION" "$RUNNER_TEMP/system"
-          zstd -d -q "$RUNNER_TEMP/system/xeeonos_$VERSION.pkgdb.tar.zst" -o "$RUNNER_TEMP/pkgdb.tar"
-          snapshot=$(sed -n 's/^SNAPSHOT=//p' "$RUNNER_TEMP/system/xeeonos_$VERSION.build.txt")
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-xeeonos-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      - name: The system (package list and images)
+        run: |
+          tools/fetch-system.sh --boot "$VERSION" "$WORK/system"
+          zstd -d -q "$WORK/system/xeeonos_$VERSION.pkgdb.tar.zst" -o "$WORK/pkgdb.tar"
+          snapshot=$(sed -n 's/^SNAPSHOT=//p' "$WORK/system/xeeonos_$VERSION.build.txt")
           echo "SNAPSHOT=$snapshot" >> "$GITHUB_ENV"
-          echo "Arch snapshot $snapshot" >> "$GITHUB_STEP_SUMMARY"
+          echo "XeeonOS $VERSION ($CHANNEL), Arch snapshot $snapshot" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Package cache
-        if: env.VERSION != ''
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: pkgcache
-          key: packages-${{ env.SNAPSHOT }}-${{ hashFiles('extensions/*/extension.conf') }}
-          restore-keys: packages-${{ env.SNAPSHOT }}-
+          key: packages-${{ env.SNAPSHOT }}-${{ matrix.name }}-${{ hashFiles(format('extensions/{0}/extension.conf', matrix.name)) }}
+          restore-keys: packages-${{ env.SNAPSHOT }}-${{ matrix.name }}-
 
       - name: Build
-        if: env.VERSION != ''
         run: |
           mkdir -p pkgcache
-          MKEXT_WORK=$RUNNER_TEMP/mkext MKEXT_CACHE=pkgcache \
-            tools/mkext.sh "$RUNNER_TEMP/pkgdb.tar" "$VERSION" "$SNAPSHOT" out
-          (cd out && sha256sum ./* | sed 's, \./, ,' > SHA256SUMS)
-          ls -lh out
+          MKEXT_WORK=$WORK/mkext MKEXT_CACHE=pkgcache \
+            tools/mkext.sh "$WORK/pkgdb.tar" "$VERSION" "$SNAPSHOT" "$WORK/out" "$NAME"
+          sudo rm -rf "$WORK/mkext"
+          ls -lh "$WORK/out"
 
-      - name: Check
-        if: env.VERSION != ''
-        run: tools/check.sh "$VERSION" out | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Check the image
+        run: tools/check.sh "$VERSION" "$WORK/out" "$NAME" | tee -a "$GITHUB_STEP_SUMMARY"
 
-      - name: Sign and publish
-        if: env.VERSION != '' && github.event_name == 'push'
+      - name: Try it on XeeonOS (virtual machine)
         env:
-          SIGNING_KEY_ARMORED: ${{ secrets.XEEONOS_SIGNING_KEY }}
+          XEEONOS_REF: ${{ needs.plan.outputs.channel }}
+        run: tools/boot-check.sh "$VERSION" "$NAME" "$WORK/out" "$WORK/system"
+
+      - name: Publish
+        if: needs.plan.outputs.publish == 'yes'
+        env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if [[ -z $SIGNING_KEY_ARMORED ]]; then
-            echo "::error::XEEONOS_SIGNING_KEY is not set in this repository: nothing published"
-            exit 1
-          fi
-          export GNUPGHOME=$RUNNER_TEMP/release-gnupg
-          mkdir -m 700 "$GNUPGHOME"
-          gpg --batch --import <<< "$SIGNING_KEY_ARMORED"
-          key=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr/ { print $10; exit }')
-          gpg --batch --yes --local-user "$key" --detach-sign --output out/SHA256SUMS.gpg out/SHA256SUMS
-
           curl -sSL https://github.com/oras-project/oras/releases/download/v1.3.0/oras_1.3.0_linux_amd64.tar.gz |
             tar -xz -C "$RUNNER_TEMP" oras
-          oras=$RUNNER_TEMP/oras
-          repo=ghcr.io/${GITHUB_REPOSITORY,,}
-          "$oras" login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GH_TOKEN"
-          cd out
-          "$oras" push "$repo:$VERSION" --artifact-type application/vnd.xeeonos.extensions.v1 ./*
-          echo "Published $repo:$VERSION" >> "$GITHUB_STEP_SUMMARY"
+          export PATH=$RUNNER_TEMP:$PATH
+          oras login ghcr.io --username "$GITHUB_ACTOR" --password-stdin <<< "$GH_TOKEN"
+          tools/publish.sh "$VERSION" "$NAME" "$WORK/out" | tee -a "$GITHUB_STEP_SUMMARY"
+          # The signed list xctl reads, with this one in it.
+          gh workflow run index.yml --repo "$GITHUB_REPOSITORY" \
+            --ref "${{ github.event.repository.default_branch }}" -f version="$VERSION"
+
+  # One check with a fixed name, for the branch rules.
+  result:
+    name: Build and check the extensions
+    needs: [plan, extension]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          PLAN: ${{ needs.plan.result }}
+          EXTENSIONS: ${{ needs.extension.result }}
+        run: |
+          echo "plan: $PLAN, extensions: $EXTENSIONS"
+          [[ $PLAN == success && $EXTENSIONS =~ ^(success|skipped)$ ]]

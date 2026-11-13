@@ -1,0 +1,7 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). Fails on the first command that fails.
+systemctl is-active docker.socket
+# The first use starts the engine.
+docker info --format 'engine {{.ServerVersion}}, storage {{.Driver}}'
+docker compose version
+docker buildx version

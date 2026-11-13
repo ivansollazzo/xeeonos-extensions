@@ -1,0 +1,8 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). No AMD GPU there: the compilers work and the
+# libraries are found. Fails on the first command that fails.
+hipcc --version
+if ldd /opt/rocm/lib/librocblas.so | grep 'not found'; then exit 1; fi
+printf '#include <stdio.h>\nint main(void) { puts("C OK"); return 0; }\n' > /tmp/t.c
+gcc /tmp/t.c -o /tmp/t
+/tmp/t

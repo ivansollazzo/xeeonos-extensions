@@ -1,0 +1,8 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). No ThinkPad there: the patched modules are the ones
+# the system would load. Fails on the first command that fails.
+for m in i2c-piix4 rmi_smbus psmouse; do
+    path=$(modinfo -n "$m")
+    echo "$m: $path"
+    [[ $path == */updates/* ]]
+done
