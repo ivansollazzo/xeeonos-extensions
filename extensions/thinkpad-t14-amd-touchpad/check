@@ -1,0 +1,4 @@
+# Paths that must be in the image (tools/check.sh).
+usr/lib/modprobe.d/thinkpad-t14-amd-touchpad.conf
+usr/lib/systemd/system/xeeonos-t14-touchpad.service
+usr/lib/xeeonos/t14-touchpad-reload

@@ -1,0 +1,7 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/dockerd
+usr/bin/docker
+usr/lib/docker/cli-plugins/docker-compose
+usr/lib/docker/cli-plugins/docker-buildx
+usr/lib/systemd/system/docker.socket
+usr/lib/systemd/system/sockets.target.wants/docker.socket
