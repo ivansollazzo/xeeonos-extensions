@@ -1,0 +1,9 @@
+#!/bin/sh
+# See xeeonos-nvidia-switch.service. Nothing to do without an NVIDIA card.
+grep -qs 0x10de /sys/bus/pci/devices/*/vendor || exit 0
+if [ -e /sys/module/nouveau ]; then
+    modprobe -r nouveau 2>/dev/null ||
+        echo "Nouveau is in use: NVIDIA's driver takes over at the next start"
+fi
+[ -e /sys/module/nouveau ] || modprobe nvidia_drm 2>/dev/null || true
+exit 0

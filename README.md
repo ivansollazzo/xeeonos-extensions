@@ -12,6 +12,8 @@ in the system image (flatpak, printing) live in the main repository.
 | `docker` | The Docker engine, Compose and Buildx; users of the group `docker` use it without sudo |
 | `rocm` | AMD ROCm runtimes (HIP, OpenCL), see [docs/rocm.md](docs/rocm.md) |
 | `rocm-sdk` | AMD ROCm SDK: `hipcc`, math libraries, headers (several GB) |
+| `nvidia` | NVIDIA's driver (open kernel modules, GTX 16xx / RTX 20xx and newer), see [docs/nvidia.md](docs/nvidia.md) |
+| `cuda` | NVIDIA CUDA toolkit (several GB); needs `nvidia` |
 | `thermald` | Intel's thermal daemon: keeps Intel processors cool before they slow down |
 | `tlp` | TLP, power saving for laptops tuned by hand (`/etc/tlp.conf`); replaces the GNOME power modes while on |
 | `gaming` | Better performance in games: GameMode, the scx_lavd CPU scheduler, no split-lock slowdown, see [docs/gaming.md](docs/gaming.md) |

@@ -175,7 +175,8 @@ jobs:
         run: |
           mkdir -p pkgcache
           MKEXT_WORK=$WORK/mkext MKEXT_CACHE=pkgcache \
-            tools/mkext.sh "$WORK/pkgdb.tar" "$VERSION" "$SNAPSHOT" "$WORK/out" "$NAME"
+            tools/mkext.sh "$WORK/pkgdb.tar" "$VERSION" "$SNAPSHOT" "$WORK/out" \
+            $(tools/requires.sh "$NAME") "$NAME"
           sudo rm -rf "$WORK/mkext"
           ls -lh "$WORK/out"
 

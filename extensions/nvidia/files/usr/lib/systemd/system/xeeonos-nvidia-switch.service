@@ -1,0 +1,17 @@
+# Extension nvidia: the extension arrives during the boot (xctl extensions
+# activate), when udev may already have loaded Nouveau for the card: swap
+# it for NVIDIA's driver before the login screen starts.
+[Unit]
+Description=NVIDIA driver instead of Nouveau
+Documentation=https://github.com/ivansollazzo/xeeonos-extensions/blob/testing/docs/nvidia.md
+DefaultDependencies=no
+After=xeeonos-extensions.service systemd-udev-trigger.service systemd-modules-load.service
+Before=display-manager.service systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/xeeonos/nvidia-switch
+
+[Install]
+WantedBy=sysinit.target
