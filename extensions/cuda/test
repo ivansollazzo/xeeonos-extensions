@@ -1,0 +1,11 @@
+# Run as root in a XeeonOS virtual machine with cuda and nvidia on
+# (tools/boot-check.sh). No NVIDIA card there: nvcc compiles a program.
+/opt/cuda/bin/nvcc --version
+test -e /etc/profile.d/cuda.sh
+cat > /tmp/hello.cu <<'CU'
+#include <cstdio>
+__global__ void k() {}
+int main() { k<<<1, 1>>>(); std::puts("compiled"); return 0; }
+CU
+/opt/cuda/bin/nvcc -o /tmp/hello /tmp/hello.cu
+test -x /tmp/hello

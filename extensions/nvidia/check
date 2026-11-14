@@ -1,0 +1,9 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/nvidia-smi
+usr/lib/libGLX_nvidia.so.0
+usr/lib/libnvidia-glcore.so | usr/lib/libEGL_nvidia.so.0
+usr/share/vulkan/icd.d/nvidia_icd.json
+usr/lib/modprobe.d/nvidia-utils.conf
+usr/lib/systemd/system/xeeonos-nvidia-switch.service
+usr/lib/systemd/system/sysinit.target.wants/xeeonos-nvidia-switch.service
+usr/lib/xeeonos/nvidia-switch

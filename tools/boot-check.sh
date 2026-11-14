@@ -31,6 +31,14 @@ http=$work/http
 mkdir "$http"
 ln "$out/xeeonos_$version.$name.xext" "$http/" 2>/dev/null || cp "$out/xeeonos_$version.$name.xext" "$http/"
 cp "$out/$name.conf" "$http/"
+# The extensions it needs (Requires=), built next to it: xctl offers to turn
+# them on too (--yes answers).
+yes=""
+for dep in $(tools/requires.sh "$name"); do
+    ln "$out/xeeonos_$version.$dep.xext" "$http/" 2>/dev/null || cp "$out/xeeonos_$version.$dep.xext" "$http/"
+    cp "$out/$dep.conf" "$http/"
+    yes=--yes
+done
 (cd "$http" && sha256sum ./* | sed 's, \./, ,' > SHA256SUMS)
 export GNUPGHOME=$work/gnupg
 mkdir -m 700 "$GNUPGHOME"
@@ -59,7 +67,7 @@ boot() { # <step> <script> <boot-test options...>
 boot 1 "
 $xctl
 systemctl start network-online.target
-xctl \$x enable $name --from http://10.0.2.2:8080 --keyring /run/credentials/@system/xctl.keyring
+xctl \$x enable $name $yes --from http://10.0.2.2:8080 --keyring /run/credentials/@system/xctl.keyring
 " --http "$http" --credential "xctl.keyring=$work/keyring.gpg" \
     --expect "Signature: valid" \
     --expect "Extension $name: on"

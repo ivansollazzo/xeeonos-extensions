@@ -39,7 +39,7 @@ for conf in /src/extensions/"$only"/extension.conf; do
     dir=$(dirname "$conf")
     name=$(basename "$dir")
     root=/work/tree/$name
-    Packages="" Enable="" KeepDevelopment=no Reinstall=""
+    Packages="" Enable="" KeepDevelopment=no Reinstall="" Requires=""
     # shellcheck disable=SC1090
     source "$conf"
     echo "::group::Extension $name: $Packages"
@@ -47,6 +47,18 @@ for conf in /src/extensions/"$only"/extension.conf; do
     # The system's packages count as installed: only what is missing comes.
     mkdir -p "$root/var/lib/pacman"
     tar -xf /work/pkgdb.tar -C "$root/var/lib/pacman"
+    # The extensions it needs (Requires=) will be there too: their packages
+    # count as installed as well, and their files are left out at the end.
+    if [[ -n $Requires ]]; then
+        for dep in $(/src/tools/requires.sh "$name"); do
+            # shellcheck disable=SC2046
+            pacman --config /tmp/pacman.conf --root "$root" --dbpath "$root/var/lib/pacman" \
+                --cachedir /cache --gpgdir /etc/pacman.d/gnupg \
+                --noconfirm --noscriptlet --needed -Sy \
+                $(Packages=""; source "/src/extensions/$dep/extension.conf"; echo "$Packages")
+        done
+        (cd "$root" && find . -mindepth 1 ! -type d ! -path './var/lib/pacman/*') > /tmp/required-files
+    fi
     if [[ -n $Packages ]]; then
         # shellcheck disable=SC2086
         pacman --config /tmp/pacman.conf --root "$root" --dbpath "$root/var/lib/pacman" \
@@ -59,6 +71,10 @@ for conf in /src/extensions/"$only"/extension.conf; do
         pacman --config /tmp/pacman.conf --root "$root" --dbpath "$root/var/lib/pacman" \
             --cachedir /cache --gpgdir /etc/pacman.d/gnupg \
             --noconfirm --noscriptlet -Sy $Reinstall
+    fi
+    if [[ -n $Requires ]]; then
+        (cd "$root" && xargs -d '\n' rm -f < /tmp/required-files)
+        find "$root" -mindepth 1 -depth -type d -empty -delete
     fi
     rm -rf "$root/var/lib/pacman" "$root/var/cache/pacman" "$root/var/log/pacman.log"
 

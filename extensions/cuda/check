@@ -1,0 +1,4 @@
+# Paths that must be in the image (tools/check.sh).
+usr/lib/xeeonos/opt/cuda/bin/nvcc
+usr/share/factory/etc/profile.d/cuda.sh
+usr/lib/tmpfiles.d/xeeonos-cuda.conf
