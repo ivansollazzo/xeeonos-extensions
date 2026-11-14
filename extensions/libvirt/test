@@ -1,0 +1,11 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). The runner need not provide nested KVM: this checks
+# the host services and API, not booting a guest.
+set -e
+for unit in virtqemud.socket virtnetworkd.socket virtstoraged.socket virtnodedevd.socket virtnwfilterd.socket virtsecretd.socket; do
+    systemctl is-active --quiet "$unit"
+done
+qemu-system-x86_64 --version
+virsh --connect qemu:///system list --all
+virsh --connect qemu:///system net-list --all
+virsh --connect qemu:///system pool-list --all
