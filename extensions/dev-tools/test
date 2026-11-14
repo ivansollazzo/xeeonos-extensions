@@ -1,0 +1,12 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). Fails on the first command that fails.
+cd "$(mktemp -d)"
+printf '#include <stdio.h>\nint main(void) { puts("built"); return 0; }\n' > hello.c
+gcc -o hello hello.c
+./hello | grep -qx built
+printf 'cmake_minimum_required(VERSION 3.10)\nproject(hello C)\nadd_executable(hello-cmake hello.c)\n' > CMakeLists.txt
+cmake -S . -B build -G Ninja >/dev/null
+cmake --build build >/dev/null
+build/hello-cmake | grep -qx built
+make --version | head -1
+gdb --version | head -1

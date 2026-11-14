@@ -1,0 +1,7 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). Fails on the first command that fails.
+systemctl is-active tlp.service
+tlp-stat -s
+# power-profiles-daemon is masked while TLP is on.
+systemctl is-enabled power-profiles-daemon.service 2>/dev/null | grep -q '^masked'
+test -e /etc/tlp.conf

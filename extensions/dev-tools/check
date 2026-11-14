@@ -1,0 +1,10 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/gcc
+usr/bin/make
+usr/bin/cmake
+usr/bin/meson
+usr/bin/ninja
+usr/bin/gdb
+usr/bin/pkg-config
+usr/include/stdio.h
+usr/include/linux/version.h

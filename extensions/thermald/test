@@ -1,0 +1,6 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). Fails on the first command that fails.
+# The virtual machine has no Intel thermal sensors: only that it is there.
+thermald --version
+systemctl cat thermald.service >/dev/null
+test -d /etc/thermald
