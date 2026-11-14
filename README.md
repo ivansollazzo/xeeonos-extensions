@@ -13,7 +13,7 @@ in the system image (flatpak, printing) live in the main repository.
 | `rocm` | AMD ROCm runtimes (HIP, OpenCL), see [docs/rocm.md](docs/rocm.md) |
 | `rocm-sdk` | AMD ROCm SDK: `hipcc`, math libraries, headers (several GB) |
 | `nvidia` | NVIDIA's driver (open kernel modules, GTX 16xx / RTX 20xx and newer), see [docs/nvidia.md](docs/nvidia.md) |
-| `cuda` | NVIDIA CUDA toolkit (several GB); needs `nvidia` |
+| `cuda` | NVIDIA CUDA toolkit (several GB); needs `nvidia` and `dev-tools` |
 | `thermald` | Intel's thermal daemon: keeps Intel processors cool before they slow down |
 | `tlp` | TLP, power saving for laptops tuned by hand (`/etc/tlp.conf`); replaces the GNOME power modes while on |
 | `gaming` | Better performance in games: GameMode, the scx_lavd CPU scheduler, no split-lock slowdown, see [docs/gaming.md](docs/gaming.md) |
@@ -63,8 +63,8 @@ it is made from that version's own package list and Arch snapshot.
    waits for the extensions turned on to be published for the new version.
 
 Changes to this repository go through pull requests, as usual: their CI
-builds and tries the extensions they change (all of them when `tools/` or the
-workflows change) on the newest XeeonOS of the target channel, without
+builds and tries the extensions they change (all of them when `tools/` or
+the workflows change) on the newest XeeonOS of the target channel, without
 publishing. After the merge, the same extensions are published for that
 version. **Run workflow** on Build does it by hand (a version, some or all
 extensions).
