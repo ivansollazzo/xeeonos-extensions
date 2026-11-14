@@ -25,7 +25,7 @@ Only what needs to be part of the system itself:
 
 Not an extension:
 
-- **applications**: Flatpak (Discover) or AppImage;
+- **applications**: Flatpak (GNOME Software) or AppImage;
 - **developer tools and any other package**: in a container, with
   `distrobox`.
 
