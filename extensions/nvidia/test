@@ -11,4 +11,4 @@ modprobe -c | grep -qx 'blacklist nouveau'
 echo "nouveau: blacklisted"
 nvidia-smi --version | head -n1 || true
 test -f /usr/share/vulkan/icd.d/nvidia_icd.json
-systemctl is-enabled xeeonos-nvidia-switch.service
+systemctl is-active xeeonos-nvidia-switch.service
