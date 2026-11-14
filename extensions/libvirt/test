@@ -1,6 +1,6 @@
 # Run as root in a XeeonOS virtual machine with the extension on
 # (tools/boot-check.sh). The runner need not provide nested KVM: this checks
-# the host services and API, not booting a guest.
+# the host services and APIs, not booting a guest.
 set -e
 for unit in virtqemud.socket virtnetworkd.socket virtstoraged.socket virtnodedevd.socket virtnwfilterd.socket virtsecretd.socket; do
     systemctl is-active --quiet "$unit"
@@ -11,3 +11,10 @@ net_info=$(virsh --connect qemu:///system net-info default)
 printf '%s\n' "$net_info" | grep -Eq '^Active:[[:space:]]+yes$'
 printf '%s\n' "$net_info" | grep -Eq '^Autostart:[[:space:]]+yes$'
 virsh --connect qemu:///system pool-list --all
+for config in /etc/swtpm_setup.conf /etc/swtpm-localca.conf /etc/swtpm-localca.options; do
+    runuser -u tss -- test -r "$config"
+done
+tpm_state=$(mktemp -d)
+trap 'rm -rf "$tpm_state"' EXIT
+chown tss:tss "$tpm_state"
+runuser -u tss -- swtpm_setup --tpm2 --tpmstate "$tpm_state" --create-ek-cert --create-platform-cert
