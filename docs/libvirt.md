@@ -21,7 +21,10 @@ flatpak install flathub org.virt_manager.virt-manager
 Open **Virtual Machine Manager** and connect to **QEMU/KVM - system**. The
 extension includes libvirt, desktop QEMU, the default NAT networking tools,
 UEFI firmware, a software TPM, and `virt-fw-vars` for preparing Secure Boot
-variable stores. Hardware virtualization (Intel VT-x or AMD-V) must be enabled
+variable stores. It also installs libvirt's packaged `default` network
+definition and marks it for autostart. When the network daemon starts, this
+provides guests outbound access through the host without bridging them onto
+the physical LAN. Hardware virtualization (Intel VT-x or AMD-V) must be enabled
 in firmware for KVM acceleration; without it, QEMU may fall back to slower
 software emulation.
 
@@ -44,25 +47,28 @@ Secure Boot support in the VM overview, then choose the prepared NVRAM store
 in its firmware settings. Secure Boot verifies guest boot components; it does
 not turn on Secure Boot for the host.
 
-Check the host connection from a terminal with:
+Check the host connection and default network from a terminal with:
 
 ```
 virsh --connect qemu:///system list --all
+virsh --connect qemu:///system net-list --all
 ```
 
 ## Access to the system instance
 
-The system instance is managed by root. If virt-manager cannot access its
-socket, authorize your account through the desktop's Polkit prompt or add it
-to the `libvirt` group:
+The system instance is managed by root. The Flatpak is granted access to its
+socket, and this setup does not require adding your account to the `libvirt`
+group when the connection already works. If access is denied, check the
+socket's Polkit authorization first. Adding an account to `libvirt` is an
+optional way to grant passwordless access:
 
 ```
 sudo usermod -aG libvirt "$USER"
 ```
 
-Log out and back in after changing group membership. Access to the read-write
-system socket grants broad control of the host and its files, so only add
-trusted accounts. See [libvirt socket authentication](https://libvirt.org/auth.html).
+Access to the read-write system socket grants broad control of the host and
+its files, so only add trusted accounts. See
+[libvirt socket authentication](https://libvirt.org/auth.html).
 
 Libvirt's service accounts and groups are created from the package's sysusers
 configuration. The `kvm` group and udev permissions for `/dev/kvm` come from
@@ -71,6 +77,7 @@ udev rules. Device-specific udev rules for USB or PCI passthrough depend on the
 hardware and should be configured only for the devices you intend to pass
 through.
 
-The included test checks that the system sockets are active and that libvirt
-can query its QEMU, network, and storage APIs. It does not start a guest VM;
-actual KVM acceleration depends on the host CPU and firmware settings.
+The included test verifies that the default network is active and set to
+autostart, and that libvirt can query its QEMU, network, and storage APIs. It
+does not start a guest VM; actual KVM acceleration depends on the host CPU and
+firmware settings.
