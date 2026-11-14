@@ -14,3 +14,4 @@ usr/lib/systemd/system/virtnodedevd.socket
 usr/lib/systemd/system/virtnwfilterd.socket
 usr/lib/systemd/system/virtsecretd.socket
 usr/lib/tmpfiles.d/libvirt.conf
+usr/lib/tmpfiles.d/xeeonos-libvirt-network.conf
