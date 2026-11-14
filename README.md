@@ -63,8 +63,8 @@ it is made from that version's own package list and Arch snapshot.
    waits for the extensions turned on to be published for the new version.
 
 Changes to this repository go through pull requests, as usual: their CI
-builds and tries the extensions they change (all of them when `tools/` or
-the workflows change) on the newest XeeonOS of the target channel, without
+builds and tries the extensions they change (all of them when `tools/` or the
+workflows change) on the newest XeeonOS of the target channel, without
 publishing. After the merge, the same extensions are published for that
 version. **Run workflow** on Build does it by hand (a version, some or all
 extensions).
