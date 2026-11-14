@@ -43,7 +43,7 @@ from Flatpak.
 An extension fits **exactly one** XeeonOS version (`SYSEXT_LEVEL=<version>`):
 it is made from that version's own package list and Arch snapshot.
 
-1. XeeonOS publishes a build (experimental, testing, or a stable release)
+1. XeeonOS publishes a build (testing, or a stable release)
    with its package list, and tells this repository.
 2. The workflow **Build** starts by itself: one job per extension, side by
    side. Each one is built against that version (`tools/mkext.sh`), its image
@@ -99,10 +99,10 @@ tools/boot-check.sh <version> <name> out sys/    # needs qemu, ovmf, mtools
   (the same update signing key as the main repository). The main
   repository's `XEEONOS_BOT_TOKEN` must reach this repository (it sends the
   signal of a new build).
-- A ruleset on `experimental`, `testing`, `stable` requiring the check
+- A ruleset on `testing`, `stable` requiring the check
   "Build and check the extensions".
 - The package `xeeonos-extensions` on ghcr.io public, after the first
   publication (xctl downloads without logging in).
 
-Branches = channels, as in the main repository: `experimental` now, later
-`testing` and `stable`.
+Branches = channels, as in the main repository: `testing` (the default
+branch) and `stable`.

@@ -11,7 +11,7 @@
 #   <out dir>     holds xeeonos_<version>.<name>.xext and <name>.conf
 #   <system dir>  tools/fetch-system.sh --boot <version> <system dir>
 # Env: XEEONOS_REF, the branch of the main repository to take boot-test.sh
-#      from (default experimental).
+#      from (default testing).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 version=${1:?usage: boot-check.sh <version> <name> <out dir> <system dir>}
@@ -20,7 +20,7 @@ out=$(realpath "${3:?out dir missing}")
 sys=${4:?system dir missing}
 work=$(mktemp -d -p "${WORK:-${RUNNER_TEMP:-/tmp}}")
 
-curl -sSfL "https://raw.githubusercontent.com/ivansollazzo/xeeonos/${XEEONOS_REF:-experimental}/tools/boot-test.sh" \
+curl -sSfL "https://raw.githubusercontent.com/ivansollazzo/xeeonos/${XEEONOS_REF:-testing}/tools/boot-test.sh" \
     -o "$work/boot-test.sh"
 chmod +x "$work/boot-test.sh"
 tools/mkdisk.sh "$sys" "$version" "$work/disk.raw"
