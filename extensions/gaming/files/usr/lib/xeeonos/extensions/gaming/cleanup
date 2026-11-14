@@ -1,0 +1,6 @@
+#!/bin/sh
+# Cleanup= of the extension gaming: turned off, the kernel's default again
+# (until the next restart, which starts from it anyway).
+if test -e /proc/sys/kernel/split_lock_mitigate; then
+    sysctl -q -w kernel.split_lock_mitigate=1
+fi

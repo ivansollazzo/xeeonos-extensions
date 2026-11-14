@@ -14,6 +14,7 @@ in the system image (flatpak, printing) live in the main repository.
 | `rocm-sdk` | AMD ROCm SDK: `hipcc`, math libraries, headers (several GB) |
 | `thermald` | Intel's thermal daemon: keeps Intel processors cool before they slow down |
 | `tlp` | TLP, power saving for laptops tuned by hand (`/etc/tlp.conf`); replaces the GNOME power modes while on |
+| `gaming` | Better performance in games: GameMode, the scx_lavd CPU scheduler, no split-lock slowdown, see [docs/gaming.md](docs/gaming.md) |
 | `dev-tools` | GCC, make, autotools, CMake, Meson, Ninja, GDB and the system headers, to build programs on the system itself |
 | `thinkpad-t14-amd-touchpad` | Touchpad of the ThinkPad T14/P14s AMD and E495 over SMBus (patched kernel modules), see [docs/thinkpad-t14-amd-touchpad.md](docs/thinkpad-t14-amd-touchpad.md) |
 

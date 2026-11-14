@@ -1,0 +1,4 @@
+#!/bin/sh
+# Setup= of the extension gaming: nothing to set up once; split_lock is set
+# at every boot (boot). Here so that Cleanup= runs when it is turned off.
+exit 0

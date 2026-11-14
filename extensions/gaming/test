@@ -1,0 +1,12 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). Fails on the first command that fails.
+gamemoded --version
+test -f /usr/lib/systemd/user/gamemoded.service
+# The scheduler is running (BPF loading is slow without KVM: up to 2 min).
+for i in $(seq 120); do grep -q lavd /sys/kernel/sched_ext/root/ops 2>/dev/null && break; sleep 1; done
+cat /sys/kernel/sched_ext/state
+cat /sys/kernel/sched_ext/root/ops
+grep -q lavd /sys/kernel/sched_ext/root/ops
+systemctl is-active xeeonos-scx-lavd.service
+# Split locks: not slowed down (where the processor detects them).
+if test -e /proc/sys/kernel/split_lock_mitigate; then test "$(sysctl -n kernel.split_lock_mitigate)" = 0; fi
