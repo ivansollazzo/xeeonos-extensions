@@ -21,11 +21,12 @@ flatpak install flathub org.virt_manager.virt-manager
 Open **Virtual Machine Manager** and connect to **QEMU/KVM - system**. The
 extension includes libvirt, desktop QEMU, the default NAT networking tools,
 UEFI firmware, a software TPM, and `virt-fw-vars` for preparing Secure Boot
-variable stores. It defines and starts libvirt's `default` NAT network, then
-starts it automatically on later boots. This gives guests outbound access
-through the host; it does not bridge them directly onto the physical LAN.
-Hardware virtualization (Intel VT-x or AMD-V) must be enabled in firmware for
-KVM acceleration; without it, QEMU may fall back to slower software emulation.
+variable stores. It also installs libvirt's packaged `default` network
+definition and marks it for autostart. When the network daemon starts, this
+provides guests outbound access through the host without bridging them onto
+the physical LAN. Hardware virtualization (Intel VT-x or AMD-V) must be enabled
+in firmware for KVM acceleration; without it, QEMU may fall back to slower
+software emulation.
 
 UEFI guests work with the included OVMF firmware. Secure Boot support firmware
 is also included, but its key store is not pre-enrolled. To prepare a guest
