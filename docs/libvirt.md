@@ -56,17 +56,19 @@ virsh --connect qemu:///system net-list --all
 
 ## Access to the system instance
 
-The system instance is managed by root. If virt-manager cannot access its
-socket, authorize your account through the desktop's Polkit prompt or add it
-to the `libvirt` group:
+The system instance is managed by root. The Flatpak is granted access to its
+socket, and this setup does not require adding your account to the `libvirt`
+group when the connection already works. If access is denied, check the
+socket's Polkit authorization first. Adding an account to `libvirt` is an
+optional way to grant passwordless access:
 
 ```
 sudo usermod -aG libvirt "$USER"
 ```
 
-Log out and back in after changing group membership. Access to the read-write
-system socket grants broad control of the host and its files, so only add
-trusted accounts. See [libvirt socket authentication](https://libvirt.org/auth.html).
+Access to the read-write system socket grants broad control of the host and
+its files, so only add trusted accounts. See
+[libvirt socket authentication](https://libvirt.org/auth.html).
 
 Libvirt's service accounts and groups are created from the package's sysusers
 configuration. The `kvm` group and udev permissions for `/dev/kvm` come from
