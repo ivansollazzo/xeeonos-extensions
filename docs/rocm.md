@@ -8,12 +8,13 @@ the same Arch snapshot as the system:
 | `rocm` | HIP and OpenCL runtimes, `rocminfo`, `rocm-smi` | running programs that use the GPU |
 | `rocm-sdk` | all of `rocm`, plus `hipcc`, the HIP and OpenCL SDKs, the math libraries (rocBLAS, rocFFT, rocRAND, rocSPARSE, rocSOLVER, hipBLAS, ...) and their headers; about 12 GB to download, keep that much free on the disk | building them |
 
-Turn on one of the two:
+Turn on one of the two; it takes effect after a restart:
 
 ```
-sudo xctl extensions enable rocm-sdk
-systemctl reboot
-rocminfo                # the GPU is listed as an agent (gfx...)
+sudo xctl extensions enable rocm      # or rocm-sdk
+sudo systemctl reboot
+rocminfo                              # the GPU is listed as an agent (gfx...)
+# rocm-sdk also provides hipcc:
 hipcc --version
 ```
 
