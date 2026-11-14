@@ -21,9 +21,11 @@ flatpak install flathub org.virt_manager.virt-manager
 Open **Virtual Machine Manager** and connect to **QEMU/KVM - system**. The
 extension includes libvirt, desktop QEMU, the default NAT networking tools,
 UEFI firmware, a software TPM, and `virt-fw-vars` for preparing Secure Boot
-variable stores. Hardware virtualization (Intel VT-x or AMD-V) must be enabled
-in firmware for KVM acceleration; without it, QEMU may fall back to slower
-software emulation.
+variable stores. It defines and starts libvirt's `default` NAT network, then
+starts it automatically on later boots. This gives guests outbound access
+through the host; it does not bridge them directly onto the physical LAN.
+Hardware virtualization (Intel VT-x or AMD-V) must be enabled in firmware for
+KVM acceleration; without it, QEMU may fall back to slower software emulation.
 
 UEFI guests work with the included OVMF firmware. Secure Boot support firmware
 is also included, but its key store is not pre-enrolled. To prepare a guest
@@ -44,10 +46,11 @@ Secure Boot support in the VM overview, then choose the prepared NVRAM store
 in its firmware settings. Secure Boot verifies guest boot components; it does
 not turn on Secure Boot for the host.
 
-Check the host connection from a terminal with:
+Check the host connection and default network from a terminal with:
 
 ```
 virsh --connect qemu:///system list --all
+virsh --connect qemu:///system net-list --all
 ```
 
 ## Access to the system instance
@@ -71,6 +74,7 @@ udev rules. Device-specific udev rules for USB or PCI passthrough depend on the
 hardware and should be configured only for the devices you intend to pass
 through.
 
-The included test checks that the system sockets are active and that libvirt
-can query its QEMU, network, and storage APIs. It does not start a guest VM;
-actual KVM acceleration depends on the host CPU and firmware settings.
+The included test verifies that the default network is active and set to
+autostart, and that libvirt can query its QEMU, network, and storage APIs. It
+does not start a guest VM; actual KVM acceleration depends on the host CPU and
+firmware settings.
