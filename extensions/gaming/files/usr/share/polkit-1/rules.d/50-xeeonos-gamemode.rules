@@ -1,0 +1,9 @@
+// Extension gaming: GameMode changes the CPU governor and the GPU's power
+// mode through its helpers. Any user at the computer (local, active
+// session) may, without being in the group "gamemode".
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("com.feralinteractive.GameMode.") == 0 &&
+        subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
+});

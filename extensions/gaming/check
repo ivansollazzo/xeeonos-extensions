@@ -1,0 +1,9 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/gamemoded
+usr/bin/gamemoderun
+usr/lib/systemd/user/gamemoded.service
+usr/share/polkit-1/rules.d/50-xeeonos-gamemode.rules
+usr/bin/scx_lavd
+usr/lib/systemd/system/xeeonos-scx-lavd.service
+usr/lib/systemd/system/multi-user.target.wants/xeeonos-scx-lavd.service
+usr/lib/xeeonos/extensions/gaming/boot

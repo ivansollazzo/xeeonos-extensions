@@ -1,0 +1,14 @@
+# Extension gaming: the CPU scheduler scx_lavd (sched_ext), for smooth games.
+# If it stops, the kernel goes back to its own scheduler by itself.
+[Unit]
+Description=scx_lavd CPU scheduler for games (XeeonOS extension gaming)
+Documentation=https://github.com/ivansollazzo/xeeonos-extensions/blob/testing/docs/gaming.md
+ConditionPathIsDirectory=/sys/kernel/sched_ext
+
+[Service]
+ExecStart=/usr/bin/scx_lavd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

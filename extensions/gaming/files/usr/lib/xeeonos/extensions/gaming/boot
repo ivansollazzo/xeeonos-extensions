@@ -1,0 +1,7 @@
+#!/bin/sh
+# Boot= of the extension gaming: at every boot with it on (and when it is
+# turned on). Games that use split locks are not slowed down on purpose by
+# the kernel (only on processors that detect them).
+if test -e /proc/sys/kernel/split_lock_mitigate; then
+    sysctl -q -w kernel.split_lock_mitigate=0
+fi
