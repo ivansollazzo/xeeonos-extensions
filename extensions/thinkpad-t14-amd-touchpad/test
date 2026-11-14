@@ -6,3 +6,6 @@ for m in i2c-piix4 rmi_smbus psmouse; do
     echo "$m: $path"
     [[ $path == */updates/* ]]
 done
+# psmouse asks for the touchpad over SMBus.
+modprobe -c | grep -qx 'options psmouse synaptics_intertouch=1'
+echo "psmouse: synaptics_intertouch=1"

@@ -16,6 +16,12 @@ sudo thinkpad-t14-amd-touchpad-check   # are the patched modules in use, is the 
 grep Phys /proc/bus/input/devices      # the Synaptics device on an "rmi4-" path
 ```
 
+The extension also sets `options psmouse synaptics_intertouch=1`
+(`/usr/lib/modprobe.d`): without it `psmouse` keeps the pad on PS/2 when its
+ID is not in the kernel's SMBus list (seen on a T14 Gen 1 AMD, `LEN2062`: the
+patched modules were loaded, the pad stayed on PS/2 until psmouse was loaded
+again with the option).
+
 The pad's name changes from "SynPS/2 Synaptics TouchPad" to "Synaptics
 TM3471-0xx"; System Settings finds it by itself.
 
@@ -39,4 +45,5 @@ To go back: `sudo xctl extensions remove thinkpad-t14-amd-touchpad` and restart.
 `tools/ci/thinkpad-t14-amd-touchpad.sh`: in a virtual machine (no ThinkPad)
 the extension is turned on, the patched `psmouse` replaces the stock one
 (loaded for QEMU's PS/2 mouse) and knows the T14 Gen 2 AMD (`LEN2073`).
-Whether the touchpad moves to SMBus can only be seen on the laptop.
+Whether the touchpad moves to SMBus can only be seen on the laptop; the test
+checks that `psmouse` gets `synaptics_intertouch=1`.
