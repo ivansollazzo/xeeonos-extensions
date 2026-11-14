@@ -1,12 +1,14 @@
 # Run as root in a XeeonOS virtual machine with the extension on
 # (tools/boot-check.sh). No NVIDIA card there: the driver is in place for
 # the running kernel, and Nouveau would not load.
-path=$(modinfo -n nvidia)
-echo "nvidia: $path ($(modinfo -F version nvidia))"
-case $path in /usr/lib/modules/$(uname -r)/*) ;; *) exit 1 ;; esac
+module=$(modinfo -n nvidia)
+resolved=$(readlink -e "$module")
+modules=$(readlink -e "/usr/lib/modules/$(uname -r)")
+echo "nvidia: $module ($(modinfo -F version nvidia))"
+case $resolved in "$modules"/*) ;; *) exit 1 ;; esac
 modinfo -n nvidia_drm
 modprobe -c | grep -qx 'blacklist nouveau'
 echo "nouveau: blacklisted"
 nvidia-smi --version | head -n1 || true
 test -f /usr/share/vulkan/icd.d/nvidia_icd.json
-systemctl is-enabled xeeonos-nvidia-switch.service
+systemctl is-active xeeonos-nvidia-switch.service
