@@ -1,0 +1,13 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/virsh
+usr/bin/qemu-system-x86_64
+usr/bin/dnsmasq
+usr/bin/swtpm
+usr/share/qemu/firmware/60-edk2-ovmf-x86_64-4m.json
+usr/lib/systemd/system/virtqemud.socket
+usr/lib/systemd/system/virtnetworkd.socket
+usr/lib/systemd/system/virtstoraged.socket
+usr/lib/systemd/system/virtnodedevd.socket
+usr/lib/systemd/system/virtnwfilterd.socket
+usr/lib/systemd/system/virtsecretd.socket
+usr/lib/tmpfiles.d/libvirt.conf
