@@ -10,6 +10,7 @@ in the system image (flatpak, printing) live in the main repository.
 | `podman` | Containers without root: each user has their own |
 | `distrobox` | Other distributions in a container that feels like the system (brings podman) |
 | `docker` | The Docker engine, Compose and Buildx; users of the group `docker` use it without sudo |
+| `libvirt` | Host libvirt and QEMU/KVM for the virt-manager Flatpak; needs a restart, see [docs/libvirt.md](docs/libvirt.md) |
 | `rocm` | AMD ROCm runtimes (HIP, OpenCL), see [docs/rocm.md](docs/rocm.md) |
 | `rocm-sdk` | AMD ROCm SDK: `hipcc`, math libraries, headers (several GB) |
 | `nvidia` | NVIDIA's driver (open kernel modules, GTX 16xx / RTX 20xx and newer), see [docs/nvidia.md](docs/nvidia.md) |
@@ -79,7 +80,7 @@ One directory per extension in `extensions/<name>/`:
   it is on), `Setup=`, `Cleanup=`, `Boot=` (scripts in
   `files/usr/lib/xeeonos/extensions/<name>/`: once, when turned off, every
   boot; see docs/extensions.md in the XeeonOS repository),
-  `Live=no` (kernel modules: on and off only at the next restart),
+  `Live=no` (on/off waits for the next restart),
   `KeepDevelopment=`, `Reinstall=`;
 - `files/`: files of its own (only under `/usr`);
 - `build.sh` (optional): an extra build step, run in the Arch container;
