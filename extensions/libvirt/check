@@ -2,7 +2,6 @@
 usr/bin/virsh
 usr/bin/qemu-system-x86_64
 usr/bin/dnsmasq
-usr/bin/iptables-nft
 usr/bin/swtpm
 usr/share/qemu/firmware/60-edk2-ovmf-x86_64-4m.json
 usr/lib/systemd/system/virtqemud.socket
