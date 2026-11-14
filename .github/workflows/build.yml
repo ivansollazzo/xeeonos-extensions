@@ -22,14 +22,14 @@ on:
   repository_dispatch:
     types: [xeeonos-published]
   push:
-    branches: [experimental, testing, stable]
+    branches: [testing, stable]
   pull_request:
   workflow_dispatch:
     inputs:
       channel:
         description: Channel
         type: choice
-        options: [experimental, testing, stable]
+        options: [testing, stable]
       version:
         description: XeeonOS version (empty = the newest of the channel)
         required: false
@@ -82,7 +82,7 @@ jobs:
           case $EVENT in
             repository_dispatch)
               if [[ ! $DISPATCH_VERSION =~ ^[0-9]{2}\.[0-9]{1,2}([.-][A-Za-z0-9.]+)?$ ]] ||
-                 [[ ! $DISPATCH_CHANNEL =~ ^(experimental|testing|stable)$ ]]; then
+                 [[ ! $DISPATCH_CHANNEL =~ ^(testing|stable)$ ]]; then
                 echo "::error::bad version or channel: '$DISPATCH_VERSION' '$DISPATCH_CHANNEL'"
                 exit 1
               fi
@@ -99,7 +99,7 @@ jobs:
               tools/plan.sh "$GITHUB_REF_NAME" "" "" "$BEFORE" "$GITHUB_SHA" > plan.txt ;;
             pull_request)
               channel=$PR_BASE_REF
-              [[ $channel =~ ^(experimental|testing|stable)$ ]] || channel=experimental
+              [[ $channel =~ ^(testing|stable)$ ]] || channel=testing
               ref=$GITHUB_SHA publish=no
               tools/plan.sh "$channel" "" "" "$PR_BASE" HEAD > plan.txt ;;
           esac
