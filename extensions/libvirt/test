@@ -8,4 +8,7 @@ done
 qemu-system-x86_64 --version
 virsh --connect qemu:///system list --all
 virsh --connect qemu:///system net-list --all
+net_info=$(virsh --connect qemu:///system net-info default)
+printf '%s\n' "$net_info" | grep -Eq '^Active:[[:space:]]+yes$'
+printf '%s\n' "$net_info" | grep -Eq '^Autostart:[[:space:]]+yes$'
 virsh --connect qemu:///system pool-list --all
