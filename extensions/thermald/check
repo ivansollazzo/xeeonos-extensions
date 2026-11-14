@@ -1,0 +1,5 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/thermald
+usr/lib/systemd/system/thermald.service
+usr/share/factory/etc/thermald
+usr/lib/tmpfiles.d/xeeonos-thermald.conf

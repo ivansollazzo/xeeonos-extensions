@@ -1,0 +1,6 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/tlp
+usr/bin/tlp-stat
+usr/lib/systemd/system/tlp.service
+usr/share/factory/etc/tlp.conf
+usr/lib/tmpfiles.d/xeeonos-tlp.conf

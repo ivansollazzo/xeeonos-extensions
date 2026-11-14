@@ -12,6 +12,9 @@ in the system image (flatpak, printing) live in the main repository.
 | `docker` | The Docker engine, Compose and Buildx; users of the group `docker` use it without sudo |
 | `rocm` | AMD ROCm runtimes (HIP, OpenCL), see [docs/rocm.md](docs/rocm.md) |
 | `rocm-sdk` | AMD ROCm SDK: `hipcc`, math libraries, headers (several GB) |
+| `thermald` | Intel's thermal daemon: keeps Intel processors cool before they slow down |
+| `tlp` | TLP, power saving for laptops tuned by hand (`/etc/tlp.conf`); replaces the GNOME power modes while on |
+| `dev-tools` | GCC, make, autotools, CMake, Meson, Ninja, GDB and the system headers, to build programs on the system itself |
 | `thinkpad-t14-amd-touchpad` | Touchpad of the ThinkPad T14/P14s AMD and E495 over SMBus (patched kernel modules), see [docs/thinkpad-t14-amd-touchpad.md](docs/thinkpad-t14-amd-touchpad.md) |
 
 ## What can be an extension
@@ -21,13 +24,15 @@ Only what needs to be part of the system itself:
 - **drivers and kernel modules** (e.g. `thinkpad-t14-amd-touchpad`);
 - **system services** that run as root or talk to the kernel (e.g. `docker`,
   `podman`);
-- **hardware runtimes** that applications use from the system (e.g. `rocm`).
+- **hardware runtimes** that applications use from the system (e.g. `rocm`);
+- **the basic developer tools** (`dev-tools`): the compiler and build tools
+  with the system's own headers, for building small things in place.
 
 Not an extension:
 
 - **applications**: Flatpak (GNOME Software) or AppImage;
-- **developer tools and any other package**: in a container, with
-  `distrobox`.
+- **anything else, including whole development environments** (languages,
+  libraries of a project): in a container, with `distrobox`.
 
 An extension that bundles an application with a system part (e.g. a virtual
 machine manager) ships only the system part here; the application comes
