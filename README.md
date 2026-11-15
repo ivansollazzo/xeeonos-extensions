@@ -20,6 +20,7 @@ in the system image (flatpak, printing) live in the main repository.
 | `gaming` | Better performance in games: GameMode, the scx_lavd CPU scheduler, no split-lock slowdown, see [docs/gaming.md](docs/gaming.md) |
 | `dev-tools` | GCC, make, autotools, CMake, Meson, Ninja, GDB and the system headers, to build programs on the system itself |
 | `thinkpad-t14-amd-touchpad` | Touchpad of the ThinkPad T14/P14s AMD and E495 over SMBus (patched kernel modules), see [docs/thinkpad-t14-amd-touchpad.md](docs/thinkpad-t14-amd-touchpad.md) |
+| `xapp` | XeeonOS applications (`.xapp`): one file per application in `~/Applications`, each in its own sandbox; see [docs/xapp.md](docs/xapp.md) |
 
 ## What can be an extension
 
@@ -31,10 +32,14 @@ Only what needs to be part of the system itself:
 - **hardware runtimes** that applications use from the system (e.g. `rocm`);
 - **the basic developer tools** (`dev-tools`): the compiler and build tools
   with the system's own headers, for building small things in place.
+- **the system support for a kind of application** (`xapp`): the sandbox,
+  the menu and the double click for `.xapp` files. The applications
+  themselves are not here: they are files, made in
+  [xeeonos-applications](https://github.com/ivansollazzo/xeeonos-applications).
 
 Not an extension:
 
-- **applications**: Flatpak (GNOME Software) or AppImage;
+- **applications**: Flatpak (GNOME Software), `.xapp` or AppImage;
 - **anything else, including whole development environments** (languages,
   libraries of a project): in a container, with `distrobox`.
 

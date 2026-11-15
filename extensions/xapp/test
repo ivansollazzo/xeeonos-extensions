@@ -1,0 +1,182 @@
+# Run as root in a XeeonOS virtual machine with the extension on
+# (tools/boot-check.sh). Fails on the first command that fails.
+#
+# A GNOME session for a test user; a small application made here with
+# `xapp build --root` from the system's own bash and a few commands, signed
+# with a key made here and trusted like an administrator would. Then: the
+# monitor of ~/Applications and the menu, the file type and the double
+# click handler, what the application sees in its sandbox, the files and
+# applications that are refused, an unknown author, thumbnail and removal.
+set -euo pipefail
+fail() { echo "FAIL: $*"; exit 1; }
+expect() { # <pattern> <text>: the text has a line matching the pattern
+    grep -Eq -- "$1" <<< "$2" || { printf '%s\n' "$2"; fail "expected: $1"; }
+}
+
+command -v xapp
+command -v erofsfuse
+
+# The user and its GNOME session (automatic login).
+id test >/dev/null 2>&1 || useradd --create-home --user-group test
+home=/home/test
+uid=$(id -u test)
+systemctl start --no-block graphical.target
+rm -rf /etc/gdm
+mkdir /etc/gdm
+printf '[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=test\n' > /etc/gdm/custom.conf
+systemctl restart display-manager.service
+for _ in $(seq 240); do pgrep -u test -x gnome-shell >/dev/null && break; sleep 1; done
+pgrep -u test -x gnome-shell >/dev/null || fail "no GNOME session"
+sleep 10
+session_env=$(runuser -u test -- env XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user show-environment |
+    grep -E '^(DBUS_SESSION_BUS_ADDRESS|XDG_RUNTIME_DIR|WAYLAND_DISPLAY|XDG_DATA_DIRS|XDG_CURRENT_DESKTOP|LANG)=')
+# shellcheck disable=SC2086
+as_test() { runuser -u test -- env $session_env HOME=$home USER=test XAPP_TERMINAL=none "$@"; }
+echo "session: $session_env" | tr '\n' ' '; echo
+
+# The application: a tree with bash, a few commands and their libraries.
+work=$home/xapp-test
+as_test mkdir -p "$work/root/usr/bin" "$work/root/usr/lib" "$work/recipe" "$work/other"
+cmds=(bash cat grep ls touch unshare dbus-send)
+for c in "${cmds[@]}"; do
+    p=$(command -v "$c") || fail "no $c on the system"
+    cp "$p" "$work/root/usr/bin/"
+done
+for lib in $(for c in "${cmds[@]}"; do ldd "$(command -v "$c")"; done | grep -o '/[^ ]*' | sort -u); do
+    cp -L "$lib" "$work/root/usr/lib/"
+done
+ln -s usr/bin "$work/root/bin"
+ln -s usr/lib "$work/root/lib"
+ln -s usr/lib "$work/root/lib64"
+mkdir -p "$work/root/usr/share/xapp-test"
+echo "image of org.xeeonos.Test" > "$work/root/usr/share/xapp-test/marker"
+cat > "$work/root/usr/bin/xapp-test-check" <<'CHECK'
+#!/usr/bin/bash
+# What the application sees inside its sandbox: "IN-<check>-<result>".
+out() { echo "IN-$*"; }
+out "HOME-$HOME"
+grep -q '^image of org.xeeonos.Test' /usr/share/xapp-test/marker && out ROOTFS-app
+test -e /usr/bin/xctl && out HOST-visible || out HOST-hidden
+test -e "$HOME/secret.txt" && out SECRET-visible || out SECRET-hidden
+ls "$HOME"/Documents/doc.txt >/dev/null 2>&1 && out DOCS-visible || out DOCS-hidden
+ls "$HOME"/Pictures/pic.txt >/dev/null 2>&1 && out PICS-visible || out PICS-hidden
+out "PID1-$(cat /proc/1/comm)"
+# Network not allowed: only the loopback interface (2 header lines + lo).
+test "$(grep -c . /proc/net/dev)" -le 3 && out NET-off || out NET-on
+unshare -U true 2>/dev/null && out USERNS-allowed || out USERNS-blocked
+touch /usr/x 2>/dev/null && out USR-writable || out USR-readonly
+for f in "$@"; do test -r "$f" && out "ARG-readable-$f"; done
+if test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"; then out WAYLAND-ok; else
+    out "WAYLAND-missing ($XDG_RUNTIME_DIR/$WAYLAND_DISPLAY)"; ls -la "$XDG_RUNTIME_DIR" 2>&1 | sed 's,^,IN-RUNTIME ,'; fi
+# The system's graphics drivers, lent: Mesa's EGL beside the application's
+# own libraries (it has none of its own).
+ls /run/host/gpu/lib/libEGL_mesa.so.0 >/dev/null 2>&1 && out GPU-lent || out GPU-not-lent
+test -e /dev/dri && out DRI-ok || out DRI-missing
+# The filtered session bus: the desktop portal answers, GNOME Shell does
+# not exist.
+dbus-send --session --print-reply --dest=org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
+    org.freedesktop.DBus.Properties.Get string:org.freedesktop.portal.Settings string:version \
+    >/dev/null 2>&1 && out BUS-portal || out BUS-no-portal
+dbus-send --session --print-reply --dest=org.gnome.Shell /org/gnome/Shell org.freedesktop.DBus.Peer.Ping \
+    >/dev/null 2>&1 && out BUS-shell-reachable || out BUS-shell-hidden
+CHECK
+chmod 0755 "$work/root/usr/bin/xapp-test-check"
+icon='<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="12" fill="#3584e4"/></svg>'
+echo "$icon" > "$work/recipe/icon.svg"
+echo "$icon" > "$work/other/icon.svg"
+cat > "$work/recipe/recipe.json" <<'JSON'
+{
+  "app_id": "org.xeeonos.Test",
+  "name": "Test",
+  "description": "The test application of the extension xapp",
+  "version": "1.0",
+  "snapshot": "2026/11/13",
+  "exec": ["/usr/bin/xapp-test-check"],
+  "gpu": "host",
+  "permissions": [
+    {"id": "network", "reason": "To check that the network is cut off when not allowed"},
+    {"id": "gpu", "reason": "To check the graphics drivers of the system"},
+    {"id": "notifications", "reason": "To check the filtered session bus"},
+    {"id": "documents", "reason": "To check a folder that was given"},
+    {"id": "pictures", "reason": "To check a folder that was not given"}
+  ],
+  "categories": ["Utility"],
+  "icon": "icon.svg"
+}
+JSON
+# Another author (same id: a fake update) and an unknown one.
+sed 's/"version": "1.0"/"version": "9.0"/' "$work/recipe/recipe.json" > "$work/other/recipe.json"
+chown -R test:test "$work"
+as_test xapp build "$work/recipe" --root "$work/root" --key "$work/author.key" \
+    --output "$work/Test.xapp" --work "$work/build" --no-install
+as_test xapp build "$work/other" --root "$work/root" --key "$work/other.key" \
+    --output "$work/fake.xapp" --work "$work/build-fake" --no-install
+sed -i 's/org.xeeonos.Test"/org.xeeonos.Unknown"/' "$work/other/recipe.json"
+as_test xapp build "$work/other" --root "$work/root" --key "$work/other.key" \
+    --output "$work/unknown.xapp" --work "$work/build-unknown" --no-install
+out=$(as_test xapp verify "$work/Test.xapp" 2>&1)
+expect "intact" "$out"
+
+# The administrator trusts the author's key: the public key is in the
+# file's manifest (the trailer's last 32 bytes say where).
+file=$work/Test.xapp
+size=$(stat -c %s "$file")
+image=$(od -An -t u8 -j $((size - 24)) -N 8 "$file" | tr -d ' ')
+mlen=$(od -An -t u4 -j $((size - 16)) -N 4 "$file" | tr -d ' ')
+signer=$(tail -c +$((image + 1)) "$file" | head -c "$mlen" | grep -o '"signer": *"[0-9a-fA-F]*"' | grep -o '[0-9a-fA-F]\{64\}')
+[[ -n $signer ]] || fail "no signer in the manifest"
+mkdir -p /etc/xapp/trusted.d
+echo "$signer" > /etc/xapp/trusted.d/test.pub
+
+# The monitor: a file dropped into ~/Applications appears in the menu.
+test -d $home/Applications || fail "no ~/Applications"
+as_test cp "$file" $home/Applications/Test.xapp
+desktop=$home/.local/share/applications/org.xeeonos.Test.desktop
+for _ in $(seq 60); do test -e "$desktop" && break; sleep 1; done
+expect "^Exec=xapp run org.xeeonos.Test %U" "$(cat "$desktop")"
+expect "^application/x-xapp" "$(as_test xdg-mime query filetype $home/Applications/Test.xapp)"
+as_test cp "$file" /tmp/renamed
+expect "content-type: application/x-xapp" "$(as_test gio info -a standard::content-type /tmp/renamed)"
+expect "^xapp-run.desktop" "$(as_test xdg-mime query default application/x-xapp)"
+
+# The sandbox.
+as_test mkdir -p $home/Documents $home/Pictures
+as_test sh -c "echo secret > $home/secret.txt; echo doc > $home/Documents/doc.txt; echo pic > $home/Pictures/pic.txt; echo note > /tmp/note.txt"
+as_test xapp permissions org.xeeonos.Test documents yes
+as_test xapp permissions org.xeeonos.Test pictures no
+as_test xapp permissions org.xeeonos.Test network no
+ls -la "/run/user/$uid" 2>&1 | sed "s,^,RUNTIME: ," || true  # root cannot look into the FUSE mounts there
+out=$(as_test env XAPP_DEBUG=1 xapp run org.xeeonos.Test /tmp/note.txt 2>&1)
+printf '%s\n' "$out" | sed 's,^,RUN: ,'
+for line in "IN-HOME-$home" IN-ROOTFS-app IN-HOST-hidden IN-SECRET-hidden IN-DOCS-visible \
+    IN-PICS-hidden IN-PID1-bwrap IN-NET-off IN-USERNS-blocked IN-USR-readonly \
+    "IN-ARG-readable-/run/xapp/docs/0/note.txt" IN-WAYLAND-ok IN-GPU-lent IN-DRI-ok \
+    IN-BUS-portal IN-BUS-shell-hidden; do
+    expect "^$line\$" "$out"
+done
+expect "^Test +org.xeeonos.Test +1.0 +trusted author" "$(as_test xapp list)"
+expect "^Author: .*\(trusted\)" "$(as_test xapp info org.xeeonos.Test)"
+
+# Refused: a changed file, another author's copy, a revoked application.
+as_test cp $home/Applications/Test.xapp /tmp/changed.xapp
+printf 'X' | as_test dd of=/tmp/changed.xapp bs=1 seek=2000 conv=notrunc status=none
+expect "the image does not match its manifest" "$(as_test xapp verify /tmp/changed.xapp 2>&1 || true)"
+expect "signed by a different author" "$(as_test xapp verify "$work/fake.xapp" 2>&1 || true)"
+echo "app org.xeeonos.Test" > /etc/xapp/revoked
+expect "revoked" "$(as_test xapp run org.xeeonos.Test 2>&1 || true)"
+rm /etc/xapp/revoked
+
+# An unknown author: nobody to ask -> it does not open; asked in a
+# terminal (text dialog).
+expect "needs an answer before it opens" "$(as_test xapp run "$work/unknown.xapp" 2>&1 || true)"
+out=$(printf '2\n' | as_test env XAPP_DIALOG=text script -qec "xapp run $work/unknown.xapp" /dev/null 2>&1 || true)
+expect "unknown author" "$out"
+
+# Thumbnail, removal.
+as_test xapp thumbnail $home/Applications/Test.xapp /tmp/thumb.png 128
+head -c 4 /tmp/thumb.png | grep -q PNG || fail "no PNG thumbnail"
+expect "^Removed $home/Applications/Test.xapp" "$(as_test xapp remove org.xeeonos.Test)"
+for _ in $(seq 10); do test -e "$desktop" || break; sleep 1; done
+test -e "$desktop" && fail "the menu entry is still there"
+test -d $home/.var/xapps/org.xeeonos.Test || fail "the data was removed"
+echo "xapp: all checks passed"
