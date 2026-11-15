@@ -1,0 +1,12 @@
+# Paths that must be in the image (tools/check.sh).
+usr/bin/xapp
+usr/bin/erofsfuse
+usr/bin/mkfs.erofs
+usr/lib/systemd/user/xapp-sync.path
+usr/lib/systemd/user/xapp-sync.service
+usr/lib/systemd/user/xapp-sync.timer
+usr/lib/systemd/user/default.target.wants/xapp-sync.path
+usr/share/applications/xapp-run.desktop
+usr/share/mime/packages/xeeonos-xapp.xml
+usr/share/thumbnailers/xapp.thumbnailer
+usr/share/xapp/xeeonos-xapp.xml
