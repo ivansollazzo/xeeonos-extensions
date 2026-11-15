@@ -142,6 +142,8 @@ fn lay(a: &mut Args, dir: &Path, dest: &str, skip: &[&str]) {
 /// The bubblewrap arguments (everything before the command).
 pub fn args(c: &Context) -> Args {
     let mut a = Args::default();
+    // First: every --setenv after it is kept, everything before is wiped.
+    a.push(&["--clearenv"]);
     let run_user = format!("/run/user/{}", c.uid);
     let home = c.home.to_string_lossy().into_owned();
     a.push(&[
@@ -303,8 +305,8 @@ pub fn args(c: &Context) -> Args {
         a.ro_bind_try(Path::new("/usr/lib/locale"), "/usr/lib/locale");
     }
 
-    // Environment: only what is listed here.
-    a.push(&["--clearenv"]);
+    // Environment: only what is listed here (and what the sections above
+    // set: --clearenv is the first argument, bwrap applies them in order).
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     let mut env: Vec<(String, String)> = vec![
         ("PATH".into(), "/usr/local/bin:/usr/bin".into()),
@@ -377,4 +379,41 @@ pub fn write_instance_files(
         ),
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clearenv_comes_first() {
+        let c = Context {
+            image: PathBuf::from("/nonexistent/image"),
+            instance: PathBuf::from("/nonexistent/instance"),
+            app_id: "org.example.App".into(),
+            uid: 1000,
+            home: PathBuf::from("/home/u"),
+            data: PathBuf::from("/home/u/.var/xapps/org.example.App"),
+            runtime_dir: PathBuf::from("/run/user/1000"),
+            network: false,
+            gpu: false,
+            audio: false,
+            camera: false,
+            x11: false,
+            folders: Vec::new(),
+            bus: Some(PathBuf::from("/nonexistent/bus")),
+            gpu_binds: Vec::new(),
+            env: Vec::new(),
+            docs: Vec::new(),
+        };
+        let a = args(&c).0;
+        let clear = a.iter().position(|x| x == "--clearenv").unwrap();
+        let first_set = a.iter().position(|x| x == "--setenv").unwrap();
+        assert!(clear < first_set);
+        // The bus address set in its own section survives.
+        assert!(
+            a.windows(2)
+                .any(|w| w[0] == "--setenv" && w[1] == "DBUS_SESSION_BUS_ADDRESS")
+        );
+    }
 }
