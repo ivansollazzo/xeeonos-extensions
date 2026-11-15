@@ -145,7 +145,7 @@ as_test sh -c "echo secret > $home/secret.txt; echo doc > $home/Documents/doc.tx
 as_test xapp permissions org.xeeonos.Test documents yes
 as_test xapp permissions org.xeeonos.Test pictures no
 as_test xapp permissions org.xeeonos.Test network no
-ls -la "/run/user/$uid" | sed "s,^,RUNTIME: ,"
+ls -la "/run/user/$uid" 2>&1 | sed "s,^,RUNTIME: ," || true  # root cannot look into the FUSE mounts there
 out=$(as_test env XAPP_DEBUG=1 xapp run org.xeeonos.Test /tmp/note.txt 2>&1)
 printf '%s\n' "$out" | sed 's,^,RUN: ,'
 for line in "IN-HOME-$home" IN-ROOTFS-app IN-HOST-hidden IN-SECRET-hidden IN-DOCS-visible \
