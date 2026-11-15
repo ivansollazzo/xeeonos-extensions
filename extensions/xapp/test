@@ -66,7 +66,8 @@ test "$(grep -c . /proc/net/dev)" -le 3 && out NET-off || out NET-on
 unshare -U true 2>/dev/null && out USERNS-allowed || out USERNS-blocked
 touch /usr/x 2>/dev/null && out USR-writable || out USR-readonly
 for f in "$@"; do test -r "$f" && out "ARG-readable-$f"; done
-test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && out WAYLAND-ok || out WAYLAND-missing
+if test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"; then out WAYLAND-ok; else
+    out "WAYLAND-missing ($XDG_RUNTIME_DIR/$WAYLAND_DISPLAY)"; ls -la "$XDG_RUNTIME_DIR" 2>&1 | sed 's,^,IN-RUNTIME ,'; fi
 # The system's graphics drivers, lent: Mesa's EGL beside the application's
 # own libraries (it has none of its own).
 ls /run/host/gpu/lib/libEGL_mesa.so.0 >/dev/null 2>&1 && out GPU-lent || out GPU-not-lent
@@ -144,7 +145,8 @@ as_test sh -c "echo secret > $home/secret.txt; echo doc > $home/Documents/doc.tx
 as_test xapp permissions org.xeeonos.Test documents yes
 as_test xapp permissions org.xeeonos.Test pictures no
 as_test xapp permissions org.xeeonos.Test network no
-out=$(as_test xapp run org.xeeonos.Test /tmp/note.txt 2>&1)
+ls -la "/run/user/$uid" | sed "s,^,RUNTIME: ,"
+out=$(as_test env XAPP_DEBUG=1 xapp run org.xeeonos.Test /tmp/note.txt 2>&1)
 printf '%s\n' "$out" | sed 's,^,RUN: ,'
 for line in "IN-HOME-$home" IN-ROOTFS-app IN-HOST-hidden IN-SECRET-hidden IN-DOCS-visible \
     IN-PICS-hidden IN-PID1-bwrap IN-NET-off IN-USERNS-blocked IN-USR-readonly \

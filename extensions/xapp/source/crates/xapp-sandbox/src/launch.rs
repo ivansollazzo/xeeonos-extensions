@@ -243,6 +243,10 @@ pub fn run(l: &Launch) -> Result<i32> {
     cmd.extend(m.exec.iter().cloned());
     cmd.extend(args);
 
+    // XAPP_DEBUG=1: the whole command line, to see what the sandbox gets.
+    if std::env::var_os("XAPP_DEBUG").is_some() {
+        eprintln!("xapp: {}", cmd.join(" "));
+    }
     let status = Command::new(&cmd[0])
         .args(&cmd[1..])
         .status()
