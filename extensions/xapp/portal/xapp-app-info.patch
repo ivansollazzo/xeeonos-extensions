@@ -1,0 +1,381 @@
+diff --git a/src/meson.build b/src/meson.build
+index 7e06400..0ad3644 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -72,6 +72,7 @@ xdp_utils_sources = enums_sources + files(
+   'xdp-app-info-registry.c',
+   'xdp-app-info-snap.c',
+   'xdp-app-info-linyaps.c',
++  'xdp-app-info-xapp.c',
+   'xdp-sealed-fd.c',
+   'xdp-usb-query.c',
+   'xdp-utils.c',
+diff --git a/src/xdp-app-info-xapp-private.h b/src/xdp-app-info-xapp-private.h
+new file mode 100644
+index 0000000..37eef34
+--- /dev/null
++++ b/src/xdp-app-info-xapp-private.h
+@@ -0,0 +1,25 @@
++/*
++ * Copyright © 2026 the XeeonOS contributors
++ *
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ */
++
++#pragma once
++
++#include "xdp-app-info-private.h"
++
++struct _XdpAppInfoXappClass
++{
++  XdpAppInfoClass parent_class;
++};
++
++#define XDP_TYPE_APP_INFO_XAPP (xdp_app_info_xapp_get_type())
++G_DECLARE_FINAL_TYPE (XdpAppInfoXapp,
++                      xdp_app_info_xapp,
++                      XDP, APP_INFO_XAPP,
++                      XdpAppInfo);
++
++XdpAppInfo * xdp_app_info_xapp_new (const char *sender,
++                                    int         pid,
++                                    int        *pidfd,
++                                    GError    **error);
+diff --git a/src/xdp-app-info-xapp.c b/src/xdp-app-info-xapp.c
+new file mode 100644
+index 0000000..24c17be
+--- /dev/null
++++ b/src/xdp-app-info-xapp.c
+@@ -0,0 +1,298 @@
++/*
++ * Copyright © 2026 the XeeonOS contributors
++ *
++ * SPDX-License-Identifier: LGPL-2.1-or-later
++ *
++ * XeeonOS applications (.xapp): each one runs in a bubblewrap sandbox
++ * made by the `xapp` tool, in a systemd scope of the user's service
++ * manager named app-xapp-<application id>-<number>.scope. The scope is
++ * what says which application it is: the application cannot leave it,
++ * while it could change its root (an application allowed to make its own
++ * sandbox, like a browser, may chroot). Its root also holds a read-only
++ * key file /.xapp-info (like Flatpak's /.flatpak-info and Linyaps'
++ * /.linyaps), which adds what the scope does not say; without a user
++ * service manager it is the only source:
++ *
++ *   [Application]
++ *   Id=org.example.App
++ *
++ *   [Instance]
++ *   Id=<instance id>
++ *
++ *   [Context]
++ *   Network=shared|none
++ *
++ * Files given to it go through the document portal; the sandbox mounts
++ * $XDG_RUNTIME_DIR/doc/by-app/<id> at $XDG_RUNTIME_DIR/doc.
++ */
++
++#include "config.h"
++
++#include "xdp-app-info-xapp-private.h"
++
++#include <errno.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++
++#if HAVE_SYS_VFS_H
++#include <sys/vfs.h>
++#endif
++
++#if HAVE_LIBSYSTEMD
++#include <systemd/sd-login.h>
++#include "xdp-app-info-host-private.h"
++#endif
++
++#define XAPP_ENGINE_ID "org.xeeonos.xapp"
++#define XAPP_INFO_FILE ".xapp-info"
++#define XAPP_UNIT_PREFIX "app-xapp-"
++
++#define XAPP_GROUP_APPLICATION "Application"
++#define XAPP_KEY_APP_ID "Id"
++#define XAPP_GROUP_INSTANCE "Instance"
++#define XAPP_KEY_INSTANCE_ID "Id"
++#define XAPP_GROUP_CONTEXT "Context"
++#define XAPP_KEY_NETWORK "Network"
++
++struct _XdpAppInfoXapp
++{
++  XdpAppInfo parent;
++
++  GKeyFile *info;
++};
++
++G_DEFINE_FINAL_TYPE (XdpAppInfoXapp, xdp_app_info_xapp, XDP_TYPE_APP_INFO);
++
++static int
++open_xapp_info (int      pid,
++                GError **error)
++{
++  g_autofree char *root_path = NULL;
++  g_autofd int root_fd = -1;
++  g_autofd int info_fd = -1;
++
++  root_path = g_strdup_printf ("/proc/%u/root", pid);
++  root_fd = openat (AT_FDCWD, root_path, O_RDONLY | O_NONBLOCK | O_DIRECTORY | O_CLOEXEC | O_NOCTTY);
++  if (root_fd == -1)
++    {
++      if (errno == EACCES)
++        {
++          struct statfs buf;
++          if (statfs (root_path, &buf) == 0 &&
++              buf.f_type == 0x65735546) /* FUSE_SUPER_MAGIC */
++            {
++              g_set_error (error, XDP_APP_INFO_ERROR,
++                           XDP_APP_INFO_ERROR_WRONG_APP_KIND,
++                           "Not a xapp (fuse rootfs)");
++              return -1;
++            }
++        }
++
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Unable to open %s", root_path);
++      return -1;
++    }
++
++  info_fd = openat (root_fd, XAPP_INFO_FILE, O_RDONLY | O_CLOEXEC | O_NOCTTY | O_NOFOLLOW);
++  if (info_fd == -1)
++    {
++      if (errno == ENOENT)
++        {
++          g_set_error (error, XDP_APP_INFO_ERROR, XDP_APP_INFO_ERROR_WRONG_APP_KIND,
++                       "Not a xapp (no " XAPP_INFO_FILE ")");
++          return -1;
++        }
++
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Unable to open the xapp info file");
++      return -1;
++    }
++
++  return g_steal_fd (&info_fd);
++}
++
++static void
++xdp_app_info_xapp_dispose (GObject *object)
++{
++  XdpAppInfoXapp *app_info_xapp = XDP_APP_INFO_XAPP (object);
++
++  g_clear_pointer (&app_info_xapp->info, g_key_file_free);
++
++  G_OBJECT_CLASS (xdp_app_info_xapp_parent_class)->dispose (object);
++}
++
++static void
++xdp_app_info_xapp_class_init (XdpAppInfoXappClass *klass)
++{
++  GObjectClass *object_class = G_OBJECT_CLASS (klass);
++
++  object_class->dispose = xdp_app_info_xapp_dispose;
++}
++
++static void
++xdp_app_info_xapp_init (XdpAppInfoXapp *app_info_xapp)
++{
++}
++
++/* The application id from the process' systemd scope, or NULL if it is not
++ * in the scope of a xapp. */
++static char *
++app_id_from_scope (int pid)
++{
++#if HAVE_LIBSYSTEMD
++  g_autofree char *unit = NULL;
++  g_autofree char *app_id = NULL;
++
++  if (sd_pid_get_user_unit (pid, &unit) < 0 || unit == NULL ||
++      !g_str_has_prefix (unit, XAPP_UNIT_PREFIX) ||
++      !g_str_has_suffix (unit, ".scope"))
++    return NULL;
++
++  app_id = _xdp_app_info_host_parse_app_id_from_unit_name (unit);
++  if (app_id == NULL || !g_application_id_is_valid (app_id))
++    return NULL;
++
++  return g_steal_pointer (&app_id);
++#else
++  return NULL;
++#endif
++}
++
++/* The key file /.xapp-info of the process' root; NULL with a
++ * XDP_APP_INFO_ERROR_WRONG_APP_KIND error if there is none. */
++static GKeyFile *
++load_xapp_info (int      pid,
++                GError **error)
++{
++  g_autofd int fd = -1;
++  g_autoptr(GError) local_error = NULL;
++  g_autoptr(GKeyFile) info = NULL;
++  g_autoptr(GMappedFile) mapped = NULL;
++  struct stat stat_buf;
++
++  fd = open_xapp_info (pid, error);
++  if (fd == -1)
++    return NULL;
++
++  if (fstat (fd, &stat_buf) != 0 || !S_ISREG (stat_buf.st_mode))
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Unable to open the xapp info file");
++      return NULL;
++    }
++
++  mapped = g_mapped_file_new_from_fd (fd, FALSE, &local_error);
++  if (mapped == NULL)
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Can't map " XAPP_INFO_FILE ": %s", local_error->message);
++      return NULL;
++    }
++
++  info = g_key_file_new ();
++  if (!g_key_file_load_from_data (info,
++                                  g_mapped_file_get_contents (mapped),
++                                  g_mapped_file_get_length (mapped),
++                                  G_KEY_FILE_NONE, &local_error))
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Can't load " XAPP_INFO_FILE ": %s", local_error->message);
++      return NULL;
++    }
++
++  return g_steal_pointer (&info);
++}
++
++XdpAppInfo *
++xdp_app_info_xapp_new (const char *sender,
++                       int         pid,
++                       int        *pidfd,
++                       GError    **error)
++{
++  g_autoptr(XdpAppInfoXapp) app_info_xapp = NULL;
++  g_autoptr(GError) local_error = NULL;
++  g_autoptr(GKeyFile) info = NULL;
++  g_autofree char *scope_app_id = NULL;
++  g_autofree char *app_id = NULL;
++  g_autofree char *instance_id = NULL;
++  g_autofree char *network = NULL;
++  XdpAppInfoFlags flags = 0;
++  const char *test_app_info_kind;
++
++  /* The tests of the portal pick one kind; this one has no test mode. */
++  test_app_info_kind = g_getenv ("XDG_DESKTOP_PORTAL_TEST_APP_INFO_KIND");
++  if (test_app_info_kind && g_strcmp0 (test_app_info_kind, "xapp") != 0)
++    {
++      g_set_error (error, XDP_APP_INFO_ERROR, XDP_APP_INFO_ERROR_WRONG_APP_KIND,
++                   "Testing requested different AppInfo kind: %s",
++                   test_app_info_kind);
++      return NULL;
++    }
++
++  scope_app_id = app_id_from_scope (pid);
++
++  info = load_xapp_info (pid, &local_error);
++  if (info == NULL)
++    {
++      /* In the scope of a xapp: it is one, whatever its root holds. */
++      if (scope_app_id == NULL ||
++          !g_error_matches (local_error, XDP_APP_INFO_ERROR,
++                            XDP_APP_INFO_ERROR_WRONG_APP_KIND))
++        {
++          g_propagate_error (error, g_steal_pointer (&local_error));
++          return NULL;
++        }
++      g_clear_error (&local_error);
++    }
++
++  if (info != NULL)
++    {
++      app_id = g_key_file_get_string (info, XAPP_GROUP_APPLICATION, XAPP_KEY_APP_ID, error);
++      if (app_id == NULL)
++        return NULL;
++
++      if (scope_app_id != NULL && g_strcmp0 (app_id, scope_app_id) != 0)
++        {
++          g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                       "The xapp %s says it is %s", scope_app_id, app_id);
++          return NULL;
++        }
++
++      instance_id = g_key_file_get_string (info, XAPP_GROUP_INSTANCE, XAPP_KEY_INSTANCE_ID, NULL);
++
++      network = g_key_file_get_string (info, XAPP_GROUP_CONTEXT, XAPP_KEY_NETWORK, NULL);
++      if (g_strcmp0 (network, "shared") == 0)
++        flags |= XDP_APP_INFO_FLAG_HAS_NETWORK;
++    }
++  else
++    {
++      app_id = g_steal_pointer (&scope_app_id);
++    }
++
++  if (!g_application_id_is_valid (app_id))
++    {
++      g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
++                   "Not a valid xapp id: %s", app_id);
++      return NULL;
++    }
++
++  if (instance_id == NULL)
++    instance_id = g_strdup_printf ("%d", pid);
++
++  app_info_xapp = g_initable_new (XDP_TYPE_APP_INFO_XAPP,
++                                  NULL,
++                                  error,
++                                  "engine", XAPP_ENGINE_ID,
++                                  "flags", flags,
++                                  "id", app_id,
++                                  "instance", instance_id,
++                                  "sender", sender,
++                                  "pidfd", g_steal_fd (pidfd),
++                                  NULL);
++  if (app_info_xapp == NULL)
++    return NULL;
++
++  app_info_xapp->info = g_steal_pointer (&info);
++
++  return XDP_APP_INFO (g_steal_pointer (&app_info_xapp));
++}
+diff --git a/src/xdp-app-info.c b/src/xdp-app-info.c
+index a518c39..4331357 100644
+--- a/src/xdp-app-info.c
++++ b/src/xdp-app-info.c
+@@ -38,6 +38,7 @@
+ #include "xdp-app-info-host-private.h"
+ #include "xdp-app-info-linyaps-private.h"
+ #include "xdp-app-info-snap-private.h"
++#include "xdp-app-info-xapp-private.h"
+ #include "xdp-enum-types.h"
+ #include "xdp-utils.h"
+ 
+@@ -326,7 +327,20 @@ xdp_app_info_new (const char  *sender,
+   g_autofd int pidfd_owned = pidfd;
+   g_autoptr(GError) local_error = NULL;
+ 
+-  app_info = xdp_app_info_flatpak_new (sender, pid, &pidfd_owned, &local_error);
++  /* First: a xapp allowed to make its own sandbox could change its root to
++   * one that looks like another kind's; its scope still says what it is. */
++  app_info = xdp_app_info_xapp_new (sender, pid, &pidfd_owned, &local_error);
++
++  if (!app_info && !g_error_matches (local_error, XDP_APP_INFO_ERROR,
++                                     XDP_APP_INFO_ERROR_WRONG_APP_KIND))
++    {
++      g_propagate_error (error, g_steal_pointer (&local_error));
++      return NULL;
++    }
++  g_clear_error (&local_error);
++
++  if (app_info == NULL)
++    app_info = xdp_app_info_flatpak_new (sender, pid, &pidfd_owned, &local_error);
+ 
+   if (!app_info && !g_error_matches (local_error, XDP_APP_INFO_ERROR,
+                                      XDP_APP_INFO_ERROR_WRONG_APP_KIND))

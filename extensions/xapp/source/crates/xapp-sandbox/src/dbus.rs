@@ -8,6 +8,10 @@
 //! sleep, screen sharing, printing, e-mail). With permissions: notifications,
 //! the camera portal. Everything else (other applications, GNOME Shell,
 //! secrets, the file manager...) does not exist for the application.
+//!
+//! The proxy runs in a small sandbox of its own whose root holds the
+//! application's /.xapp-info: the desktop portal sees the proxy, not the
+//! application, and so knows which application is asking (like Flatpak).
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -21,10 +25,17 @@ const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 
 /// The proxy's rules for an application.
 pub fn rules(app_id: &str, notifications: bool, camera: bool) -> Vec<String> {
-    let mut r = vec![format!("--own={app_id}"), format!("--own={app_id}.*")];
+    let mut r = vec![
+        format!("--own={app_id}"),
+        format!("--own={app_id}.*"),
+        // The files the file chooser gave it (GTK asks the document portal
+        // for their paths, drag and drop uses it).
+        "--talk=org.freedesktop.portal.Documents".to_string(),
+    ];
     let mut portal = vec![
         "org.freedesktop.DBus.Properties.*",
         "org.freedesktop.portal.OpenURI.*",
+        "org.freedesktop.portal.FileChooser.*",
         "org.freedesktop.portal.Settings.*",
         "org.freedesktop.portal.Inhibit.*",
         "org.freedesktop.portal.ScreenCast.*",
@@ -80,15 +91,83 @@ impl Drop for Proxy {
     }
 }
 
+/// The proxy's own sandbox: the system's programs, the runtime directory
+/// (the bus, the instance) and the application's /.xapp-info (the file
+/// `xapp-info` of the instance).
+fn proxy_sandbox(instance: &Path, runtime_dir: &Path) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "--die-with-parent",
+        "--unshare-pid",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+        "--symlink",
+        "usr/bin",
+        "/bin",
+        "--symlink",
+        "usr/bin",
+        "/sbin",
+        "--symlink",
+        "usr/lib",
+        "/lib",
+        "--symlink",
+        "usr/lib",
+        "/lib64",
+        "--ro-bind-try",
+        "/etc",
+        "/etc",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let rt = runtime_dir.to_string_lossy().into_owned();
+    a.extend(["--bind".into(), rt.clone(), rt]);
+    a.extend([
+        "--ro-bind".into(),
+        instance.join("xapp-info").to_string_lossy().into_owned(),
+        "/.xapp-info".into(),
+        "--".into(),
+        "xdg-dbus-proxy".into(),
+    ]);
+    a
+}
+
+/// Start the document portal if it is not running yet (it is started on
+/// demand): its folder for the application must be there before the
+/// sandbox binds it.
+pub fn start_document_portal() {
+    if session_bus().is_none() || !have("gdbus") {
+        return;
+    }
+    let _ = Command::new("gdbus")
+        .args([
+            "call",
+            "--session",
+            "--timeout=5",
+            "--dest=org.freedesktop.portal.Documents",
+            "--object-path=/org/freedesktop/portal/documents",
+            "--method=org.freedesktop.portal.Documents.GetMountPoint",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 /// Start the proxy for an application, its socket in `instance`. `None`:
 /// no session bus or no xdg-dbus-proxy (the application then has no bus).
 pub fn start(instance: &Path, rules: &[String]) -> Option<Proxy> {
     let address = session_bus()?;
-    if !have("xdg-dbus-proxy") {
+    if !have("xdg-dbus-proxy") || !have("bwrap") {
         return None;
     }
     let socket = instance.join("bus");
-    let child = Command::new("xdg-dbus-proxy")
+    let child = Command::new("bwrap")
+        .args(proxy_sandbox(instance, &paths::runtime_dir()))
         .arg(address)
         .arg(&socket)
         .arg("--filter")
@@ -121,5 +200,20 @@ mod tests {
         let r = rules("org.mozilla.firefox", true, true);
         assert!(r.contains(&"--talk=org.freedesktop.Notifications".to_string()));
         assert!(r.iter().any(|x| x.contains("portal.Camera")));
+        assert!(r.iter().any(|x| x.contains("portal.FileChooser")));
+        assert!(r.contains(&"--talk=org.freedesktop.portal.Documents".to_string()));
+    }
+
+    #[test]
+    fn proxy_has_the_info_file() {
+        let a = proxy_sandbox(Path::new("/r/xapp/run/a-1"), Path::new("/r"));
+        assert!(a.windows(3).any(|w| w[0] == "--ro-bind"
+            && w[1] == "/r/xapp/run/a-1/xapp-info"
+            && w[2] == "/.xapp-info"));
+        assert!(
+            a.windows(3)
+                .any(|w| w[0] == "--bind" && w[1] == "/r" && w[2] == "/r")
+        );
+        assert_eq!(a.last().unwrap(), "xdg-dbus-proxy");
     }
 }

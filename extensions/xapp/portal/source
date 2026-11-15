@@ -1,0 +1,4 @@
+# The xdg-desktop-portal release the patch is for: the version of the Arch
+# snapshot (build.sh checks that they are the same) and its tarball's sha256.
+version=1.22.1
+sha256=d4879ddb3d65ff1a8f19187497e6f13dc5d267bcac404a5d501218be355753d3

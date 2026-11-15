@@ -30,6 +30,7 @@ delle applicazioni ufficiali stanno nel repository
 6. [Il monitor e il desktop](#6-il-monitor-e-il-desktop)
 7. [L'avvio](#7-lavvio)
 8. [La sandbox](#8-la-sandbox)
+   - [8bis. Il portal del desktop](#8bis-il-portal-del-desktop-il-tipo-di-applicazione-xapp)
 9. [Il contratto con il sistema](#9-il-contratto-con-il-sistema)
 10. [I permessi](#10-i-permessi)
 11. [La grafica (GPU)](#11-la-grafica-gpu)
@@ -220,7 +221,7 @@ Ogni file scritto da xapp porta `X-Xapp-Id=`: xapp cancella solo i propri.
 4. **Sandbox**: monta l'immagine, prepara l'ambiente, avvia l'app in uno
    scope systemd tutto suo (`app-xapp-<id>-<pid>.scope`). Lo scope dà i
    limiti di risorse (TasksMax), il nome con cui il portal del desktop
-   riconosce l'app, e i log.
+   riconosce l'app (sezione 8bis), e i log.
 
 ## 8. La sandbox
 
@@ -237,7 +238,8 @@ pezzo per pezzo:
 | `/tmp`, `/var`, `/run` | vuoti, privati |
 | `$HOME` | `~/.var/xapps/<id>` (i dati dell'app), lettura e scrittura |
 | `$HOME/Documenti`, ... | solo le cartelle permesse, allo stesso percorso |
-| `/run/user/<uid>` | Wayland, PipeWire (se permesso), il bus di sessione filtrato |
+| `/run/user/<uid>` | Wayland, PipeWire (se permesso), il bus di sessione filtrato, `doc/`: i file dati dal portal (selettore dei file) |
+| `/.xapp-info` | chi è l'app, per il portal del desktop (sezione 8bis) |
 | `/run/host` | font, icone, temi, driver grafici del sistema |
 | `/run/xapp/docs/<n>/` | i file che l'app è stata chiamata ad aprire |
 
@@ -248,14 +250,23 @@ Altre protezioni:
   unshare, setns, clone con `CLONE_NEWUSER`, cambio dell'ora, swap, reboot,
   `TIOCSTI` e altro. clone3 risponde "non supportato", così glibc ripiega su
   clone, di cui il filtro vede i flag. I programmi i386/x32 vengono fermati.
+  Con il permesso `nested_sandbox` (browser, app Electron, che isolano le
+  proprie pagine in namespace utente) unshare e clone con `CLONE_NEWUSER`
+  sono permessi; mount, setns e il resto restano rifiutati, e i namespace
+  nuovi ereditano il filtro. Solo dentro lo scope systemd (senza il
+  servizio utente di systemd il permesso non viene dato).
 - `--cap-drop ALL`, `--die-with-parent`.
 - **Bus di sessione filtrato** con `xdg-dbus-proxy`, politica "nega tutto".
   Passano solo il proprio nome, il portal del desktop per le parti che
-  chiedono all'utente o aprono soltanto (link e file, impostazioni come il
-  tema scuro, inibizione della sospensione, condivisione dello schermo,
-  stampa, e-mail), le notifiche e il portal Camera (con i rispettivi
-  permessi). Altre app, GNOME Shell, i segreti e il file manager non
-  esistono per l'app.
+  chiedono all'utente o aprono soltanto (link e file, selettore dei file,
+  impostazioni come il tema scuro, inibizione della sospensione,
+  condivisione dello schermo, stampa, e-mail), il document portal, le
+  notifiche e il portal Camera (con i rispettivi permessi). Altre app,
+  GNOME Shell, i segreti e il file manager non esistono per l'app.
+- **Impostazioni di GNOME**: dconf non c'è nella sandbox, quindi GTK le
+  legge dal portal (`GTK_USE_PORTAL=1` per GTK 3, `GDK_DEBUG=portals` per
+  GTK 4): pulsanti della finestra (minimizza, massimizza, chiudi), tema,
+  caratteri, stile scuro. Così passa anche il selettore dei file.
 - Ambiente ripulito (`--clearenv`): passano solo lingua, terminale, desktop
   e fuso orario.
 - **Niente X11** di default (permesso `x11`).
@@ -271,12 +282,55 @@ sono condivise con il resto della sessione. Su GNOME il socket Wayland è
 quello normale (Mutter non dà comunque protocolli privilegiati ai client
 normali). Un'app con permesso `x11` può vedere le altre finestre X11.
 
+## 8bis. Il portal del desktop: il tipo di applicazione "xapp"
+
+xdg-desktop-portal riconosce le app Flatpak, Snap e Linyaps; le altre le
+tratta come programmi del sistema, senza limiti. L'estensione porta una
+versione del portal con un quarto tipo, **"xapp"**
+(`extensions/xapp/portal/xapp-app-info.patch`, da proporre upstream):
+`xdg-desktop-portal` e `xdg-document-portal` della stessa versione dello
+snapshot di Arch, compilati in `build.sh` con le stesse funzioni del
+pacchetto di Arch e messi in `/usr/lib` al posto di quelli del sistema
+(se lo snapshot cambia versione, la build si ferma finché la patch non è
+aggiornata in `portal/source`).
+
+- **Chi è**: lo scope `app-xapp-<id>-<n>.scope`, da cui l'app non può
+  uscire, e il file `/.xapp-info` nella sua radice (in sola lettura):
+
+  ```ini
+  [Application]
+  Id=org.mozilla.firefox
+
+  [Instance]
+  Id=<pid di xapp>
+
+  [Context]
+  Network=shared|none
+  ```
+
+  Se c'è lo scope, comanda lo scope: un'app con `nested_sandbox` può
+  cambiare radice (chroot) e far sparire o falsificare `/.xapp-info`, non
+  lo scope. Per questo il tipo "xapp" viene controllato **per primo**,
+  prima di Flatpak.
+- **Il bus**: il portal vede `xdg-dbus-proxy`, non l'app. Il proxy gira in
+  una piccola sandbox sua, con lo stesso `/.xapp-info` (come fa Flatpak).
+- **I file**: il selettore dei file registra i file scelti nel document
+  portal; l'app li vede in `$XDG_RUNTIME_DIR/doc/<id>/<nome>` (la sandbox
+  monta lì `doc/by-app/<id>`, solo la sua parte). `xapp run` avvia il
+  document portal se non è ancora partito.
+- I permessi decisi nei dialoghi del portal (posizione, screenshot, ...)
+  restano legati all'id dell'app, come per Flatpak.
+
+Il portal nuovo vale dal login successivo all'attivazione dell'estensione
+(quello già in esecuzione resta il vecchio).
+
 ## 9. Il contratto con il sistema
 
 È l'elenco esatto di quello che XeeonOS mette dentro ogni sandbox. Tutto il
 resto viene dall'immagine dell'app. **Versione 1**:
 
-- sempre: socket Wayland, bus di sessione filtrato, `/etc/hosts`,
+- sempre: socket Wayland, bus di sessione filtrato, `/.xapp-info`, i file
+  dati dal document portal (`$XDG_RUNTIME_DIR/doc`), `/etc/hosts`,
   `/etc/hostname`, `/etc/machine-id`, fuso orario (`/etc/localtime`),
   certificati CA (`/etc/ssl`, `/etc/ca-certificates`), font del sistema e
   dell'utente (`/run/host/fonts`, via `FONTCONFIG_FILE`), icone e temi
@@ -304,6 +358,7 @@ ottenere.
 | `network` | rete e internet | sì |
 | `gpu` | accelerazione grafica | sì |
 | `notifications` | notifiche | sì |
+| `nested_sandbox` | una sandbox propria dentro questa (namespace utente: browser, app Electron) | sì |
 | `documents`, `downloads`, `pictures`, `music`, `videos`, `desktop` | la cartella utente corrispondente (nomi tradotti da `~/.config/user-dirs.dirs`) | chiesto |
 | `audio` | suono e microfono (in v1 insieme: il socket PipeWire non li separa bene) | chiesto |
 | `camera` | fotocamera | chiesto |
@@ -473,17 +528,21 @@ e per `xapp build` `podman` o `docker`.
 
 - Unitari (`cargo test` in `extensions/xapp/build.sh`): file
   `.xapp` scritto e riletto, un byte cambiato rifiutato, manifest,
-  firma, filtro seccomp eseguito da un piccolo interprete BPF, regole del
-  bus, prestito dei file, mimeapps.list, versioni e date.
+  firma, filtro seccomp eseguito da un piccolo interprete BPF (con e senza
+  `nested_sandbox`), regole del bus, sandbox del proxy, `/.xapp-info`,
+  prestito dei file, mimeapps.list, versioni e date.
 - In VM (`extensions/xapp/test`, eseguito da `tools/boot-check.sh` sulla
   versione di XeeonOS pubblicata): un'app di prova costruita nella VM con
   `xapp build --root` (bash e pochi comandi del sistema), messa in
   `~/Applications` durante una sessione GNOME. Si verificano: il menu, il
   tipo di file anche senza estensione, il doppio clic; nella sandbox:
   immagine propria, sistema e home invisibili, cartella permessa sì e negata
-  no, niente rete, niente namespace utente, `/usr` in sola lettura,
-  Wayland, driver grafici del sistema prestati, bus filtrato
-  (portal sì, GNOME Shell no), file aperto prestato. Vengono rifiutati un
+  no, niente rete, niente namespace utente (e con `nested_sandbox` sì),
+  `/usr` in sola lettura, Wayland, driver grafici del sistema prestati, bus
+  filtrato (portal sì, GNOME Shell no), file aperto prestato; il portal
+  dell'estensione al posto di quello del sistema, che riconosce l'app come
+  xapp (il document portal risponde "Not allowed in sandbox"), la cartella
+  `doc`, e i pulsanti della finestra impostati in GNOME letti dal portal. Vengono rifiutati un
   file cambiato, la copia di un altro autore e un'app revocata. Per un
   autore sconosciuto si vede la domanda, e senza nessuno a cui chiedere
   l'app non si apre. Infine miniatura, lista, info, e la rimozione che
@@ -494,10 +553,8 @@ e per `xapp build` `podman` o `docker`.
 
 ## 18. Limiti noti e lavori futuri
 
-- **Accesso a un singolo file** scelto nel selettore di sistema (document
-  portal): serve che xdg-desktop-portal riconosca le app xapp (patch o
-  supporto upstream). Oggi i permessi sono per cartella, più i file
-  prestati all'apertura.
+- **Tipo "xapp" upstream** in xdg-desktop-portal, così da non dover
+  sostituire il portal del sistema.
 - **Microfono separato dalla riproduzione** (regole WirePlumber o portal).
 - **Domande al momento dell'uso** invece che all'avvio.
 - **Dialoghi grafici** invece che da terminale.

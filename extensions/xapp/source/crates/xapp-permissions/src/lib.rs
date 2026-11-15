@@ -52,6 +52,12 @@ pub const CATALOG: &[Info] = &[
         folder: None,
     },
     Info {
+        id: "nested_sandbox",
+        label: "Its own sandbox inside this one (browsers, Electron apps)",
+        default: true,
+        folder: None,
+    },
+    Info {
         id: "documents",
         label: "Your Documents folder",
         default: false,
@@ -244,6 +250,7 @@ mod tests {
             );
         }
         assert!(info("camera").is_some());
+        assert!(info("nested_sandbox").is_some_and(|i| i.default));
         assert!(info("everything").is_none());
     }
 }

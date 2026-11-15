@@ -2,6 +2,8 @@
 usr/bin/xapp
 usr/bin/erofsfuse
 usr/bin/mkfs.erofs
+usr/lib/xdg-desktop-portal
+usr/lib/xdg-document-portal
 usr/lib/systemd/user/xapp-sync.path
 usr/lib/systemd/user/xapp-sync.service
 usr/lib/systemd/user/xapp-sync.timer
