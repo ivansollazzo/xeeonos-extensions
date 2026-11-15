@@ -68,7 +68,8 @@ ls "$HOME"/Pictures/pic.txt >/dev/null 2>&1 && out PICS-visible || out PICS-hidd
 out "PID1-$(cat /proc/1/comm)"
 # Network not allowed: only the loopback interface (2 header lines + lo).
 test "$(grep -c . /proc/net/dev)" -le 3 && out NET-off || out NET-on
-unshare -U true 2>/dev/null && out USERNS-allowed || out USERNS-blocked
+# A new user namespace (the image has no `true`: bash -c : instead).
+unshare -U bash -c : 2>/dev/null && out USERNS-allowed || out USERNS-blocked
 touch /usr/x 2>/dev/null && out USR-writable || out USR-readonly
 for f in "$@"; do test -r "$f" && out "ARG-readable-$f"; done
 if test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"; then out WAYLAND-ok; else
