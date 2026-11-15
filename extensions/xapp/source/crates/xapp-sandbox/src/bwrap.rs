@@ -11,7 +11,9 @@
 //!   /proc /dev /sys(read-only, devices)  /tmp /var /run (empty)
 //!   $HOME    the application's data, ~/.var/xapps/<id>, read-write
 //!   $HOME/<folder>   folders the user gave (Documents, ...)
-//!   /run/user/<uid>  Wayland, PipeWire (audio), the filtered session bus
+//!   /run/user/<uid>  Wayland, PipeWire (audio), the filtered session bus,
+//!            doc: the files the desktop portal gave it (file chooser)
+//!   /.xapp-info  who it is, for the desktop portal (its kind "xapp")
 //!   /run/host        fonts, icons, themes, lent graphics drivers
 //!   /run/xapp/docs   files the application was asked to open
 //!
@@ -36,6 +38,9 @@ impl Args {
     }
     pub fn bind(&mut self, src: &Path, dst: &str) {
         self.push(&["--bind", &src.to_string_lossy(), dst]);
+    }
+    pub fn bind_try(&mut self, src: &Path, dst: &str) {
+        self.push(&["--bind-try", &src.to_string_lossy(), dst]);
     }
     pub fn dev_bind_try(&mut self, src: &Path, dst: &str) {
         self.push(&["--dev-bind-try", &src.to_string_lossy(), dst]);
@@ -184,6 +189,8 @@ pub fn args(c: &Context) -> Args {
     a.symlink(Path::new("../run"), "/var/run");
     a.tmpfs("/run");
     a.push(&["--perms", "0700", "--dir", &run_user]);
+    // Who it is, for the desktop portal (written by write_instance_files).
+    a.ro_bind(&c.instance.join("xapp-info"), "/.xapp-info");
 
     // What the system lends.
     for f in ["/etc/hosts", "/etc/hostname", "/etc/machine-id"] {
@@ -242,6 +249,17 @@ pub fn args(c: &Context) -> Args {
             "DBUS_SESSION_BUS_ADDRESS",
             &format!("unix:path={run_user}/bus"),
         );
+        // The files the portal gives it (file chooser, drag and drop):
+        // only its own part of the document store, like Flatpak.
+        a.bind_try(
+            &c.runtime_dir.join("doc/by-app").join(&c.app_id),
+            &format!("{run_user}/doc"),
+        );
+        // GTK reads the desktop's settings (window buttons, theme, fonts,
+        // dark style) from the portal instead of dconf, which is not
+        // there, and opens files through it: GTK 3 and GTK 4.
+        a.setenv("GTK_USE_PORTAL", "1");
+        a.setenv("GDK_DEBUG", "portals");
     }
     if c.audio || c.camera {
         a.ro_bind_try(
@@ -348,14 +366,26 @@ pub fn args(c: &Context) -> Args {
     a
 }
 
-/// The instance's own files: passwd and group with only the user, and a
-/// fontconfig file that adds the system's fonts to the application's.
+/// Who the application is, for the desktop portal: a key file read at
+/// /.xapp-info by its kind of application "xapp" (portal/ of the extension).
+pub fn xapp_info(app_id: &str, instance_id: &str, network: bool) -> String {
+    format!(
+        "[Application]\nId={app_id}\n\n[Instance]\nId={instance_id}\n\n[Context]\nNetwork={}\n",
+        if network { "shared" } else { "none" }
+    )
+}
+
+/// The instance's own files: passwd and group with only the user, a
+/// fontconfig file that adds the system's fonts to the application's, and
+/// /.xapp-info.
 pub fn write_instance_files(
     instance: &Path,
     uid: u32,
     gid: u32,
     home: &Path,
+    info: &str,
 ) -> std::io::Result<()> {
+    fs::write(instance.join("xapp-info"), info)?;
     let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
     fs::write(
         instance.join("passwd"),
@@ -415,5 +445,25 @@ mod tests {
             a.windows(2)
                 .any(|w| w[0] == "--setenv" && w[1] == "DBUS_SESSION_BUS_ADDRESS")
         );
+        // The portal: who it is, its documents, GTK's settings.
+        assert!(a.windows(3).any(|w| w[0] == "--ro-bind"
+            && w[1] == "/nonexistent/instance/xapp-info"
+            && w[2] == "/.xapp-info"));
+        assert!(a.windows(3).any(|w| w[0] == "--bind-try"
+            && w[1] == "/run/user/1000/doc/by-app/org.example.App"
+            && w[2] == "/run/user/1000/doc"));
+        assert!(
+            a.windows(3)
+                .any(|w| w[0] == "--setenv" && w[1] == "GTK_USE_PORTAL" && w[2] == "1")
+        );
+    }
+
+    #[test]
+    fn info_file() {
+        assert_eq!(
+            xapp_info("org.example.App", "42", false),
+            "[Application]\nId=org.example.App\n\n[Instance]\nId=42\n\n[Context]\nNetwork=none\n"
+        );
+        assert!(xapp_info("a.b.C", "1", true).ends_with("Network=shared\n"));
     }
 }

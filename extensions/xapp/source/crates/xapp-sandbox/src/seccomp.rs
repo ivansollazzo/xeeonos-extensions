@@ -9,6 +9,11 @@
 //! terminal (TIOCSTI) and the like. clone3 answers "not supported", so the
 //! C library falls back to clone, whose flags the filter can see. Programs
 //! of another architecture (x32, i386) are stopped.
+//!
+//! With the permission `nested_sandbox` (browsers, Electron apps: they
+//! isolate their own pages in user namespaces) unshare and clone with
+//! CLONE_NEWUSER are allowed; mounting, setns and the rest stay refused,
+//! and the new namespaces inherit this filter.
 
 /// One instruction of a classic BPF program (struct sock_filter).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +52,8 @@ const TIOCSTI: u32 = 0x5412;
 const TIOCLINUX: u32 = 0x541c;
 const CLONE_NEWUSER: u32 = 0x1000_0000;
 
+const SYS_UNSHARE: u32 = 272;
+
 /// x86-64 system call numbers refused with EPERM.
 pub const DENIED: &[(u32, &str)] = &[
     (101, "ptrace"),
@@ -76,7 +83,7 @@ pub const DENIED: &[(u32, &str)] = &[
     (248, "add_key"),
     (249, "request_key"),
     (250, "keyctl"),
-    (272, "unshare"),
+    (SYS_UNSHARE, "unshare"),
     (298, "perf_event_open"),
     (304, "open_by_handle_at"),
     (305, "clock_adjtime"),
@@ -114,8 +121,9 @@ fn ret(k: u32) -> Insn {
     }
 }
 
-/// The filter program.
-pub fn program() -> Vec<Insn> {
+/// The filter program. `nested`: the application may make its own
+/// sandbox (user namespaces).
+pub fn program(nested: bool) -> Vec<Insn> {
     let mut p = vec![
         // Only x86-64 programs.
         ld(OFF_ARCH),
@@ -129,6 +137,9 @@ pub fn program() -> Vec<Insn> {
         ret(RET_ERRNO | ENOSYS),
     ];
     for &(nr, _) in DENIED {
+        if nested && nr == SYS_UNSHARE {
+            continue;
+        }
         p.push(jmp(JEQ, nr, 0, 1));
         p.push(ret(RET_ERRNO | EPERM));
     }
@@ -142,20 +153,22 @@ pub fn program() -> Vec<Insn> {
         ret(RET_ERRNO | EPERM),
     ]);
     // clone: refuse a new user namespace (flags in the first argument).
-    p.extend([
-        jmp(JEQ, SYS_CLONE, 0, 3),
-        ld(off_arg_low(0)),
-        jmp(JSET, CLONE_NEWUSER, 0, 1),
-        ret(RET_ERRNO | EPERM),
-        ret(RET_ALLOW),
-    ]);
+    if !nested {
+        p.extend([
+            jmp(JEQ, SYS_CLONE, 0, 3),
+            ld(off_arg_low(0)),
+            jmp(JSET, CLONE_NEWUSER, 0, 1),
+            ret(RET_ERRNO | EPERM),
+        ]);
+    }
+    p.push(ret(RET_ALLOW));
     p
 }
 
 /// The program as the bytes bubblewrap reads (struct sock_filter[]).
-pub fn bytes() -> Vec<u8> {
+pub fn bytes(nested: bool) -> Vec<u8> {
     let mut out = Vec::new();
-    for i in program() {
+    for i in program(nested) {
         out.extend_from_slice(&i.code.to_le_bytes());
         out.push(i.jt);
         out.push(i.jf);
@@ -170,7 +183,11 @@ mod tests {
 
     /// A tiny BPF interpreter, enough to run the filter in the tests.
     fn eval(nr: u32, arch: u32, args: [u64; 6]) -> u32 {
-        let p = program();
+        eval_with(false, nr, arch, args)
+    }
+
+    fn eval_with(nested: bool, nr: u32, arch: u32, args: [u64; 6]) -> u32 {
+        let p = program(nested);
         let mut data = Vec::new();
         data.extend_from_slice(&nr.to_le_bytes());
         data.extend_from_slice(&arch.to_le_bytes());
@@ -227,8 +244,28 @@ mod tests {
     }
 
     #[test]
+    fn nested_sandbox() {
+        let newuser = [CLONE_NEWUSER as u64 | 0x11, 0, 0, 0, 0, 0];
+        assert_eq!(eval_with(true, SYS_CLONE, A, newuser), RET_ALLOW);
+        assert_eq!(eval_with(true, SYS_UNSHARE, A, [0; 6]), RET_ALLOW);
+        assert_eq!(eval_with(false, SYS_UNSHARE, A, [0; 6]), RET_ERRNO | EPERM);
+        // Still refused: mounting, setns, ptrace, clone3 (ENOSYS), i386.
+        for nr in [165, 308, 101, 155] {
+            assert_eq!(eval_with(true, nr, A, [0; 6]), RET_ERRNO | EPERM, "{nr}");
+        }
+        assert_eq!(eval_with(true, SYS_CLONE3, A, [0; 6]), RET_ERRNO | ENOSYS);
+        assert_eq!(eval_with(true, 1, 0x4000_0003, [0; 6]), RET_KILL_PROCESS);
+        assert_eq!(
+            eval_with(true, SYS_IOCTL, A, [1, TIOCSTI as u64, 0, 0, 0, 0]),
+            RET_ERRNO | EPERM
+        );
+    }
+
+    #[test]
     fn encoding() {
-        assert_eq!(bytes().len(), program().len() * 8);
-        assert!(program().len() < 4096);
+        for nested in [false, true] {
+            assert_eq!(bytes(nested).len(), program(nested).len() * 8);
+            assert!(program(nested).len() < 4096);
+        }
     }
 }

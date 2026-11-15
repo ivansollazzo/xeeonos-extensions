@@ -136,7 +136,14 @@ pub fn run(l: &Launch) -> Result<i32> {
         fs::create_dir_all(data.join(d))?;
     }
     let home = paths::home();
-    bwrap::write_instance_files(&instance.0, uid(), gid(), &home)?;
+    let network = given("network");
+    bwrap::write_instance_files(
+        &instance.0,
+        uid(),
+        gid(),
+        &home,
+        &bwrap::xapp_info(&m.app_id, &std::process::id().to_string(), network),
+    )?;
 
     let folders: Vec<PathBuf> = perms::CATALOG
         .iter()
@@ -164,6 +171,7 @@ pub fn run(l: &Launch) -> Result<i32> {
     }
 
     let (args, docs) = lend_files(&l.args, &folders);
+    dbus::start_document_portal();
     let proxy = dbus::start(
         &instance.0,
         &dbus::rules(&m.app_id, given("notifications"), given("camera")),
@@ -183,7 +191,7 @@ pub fn run(l: &Launch) -> Result<i32> {
         home: home.clone(),
         data,
         runtime_dir: paths::runtime_dir(),
-        network: given("network"),
+        network,
         gpu: gpu_given,
         audio: given("audio"),
         camera: given("camera"),
@@ -195,15 +203,26 @@ pub fn run(l: &Launch) -> Result<i32> {
         docs,
     };
     let bwrap_args = bwrap::args(&ctx);
+    // Its own sandbox inside (user namespaces) only in a scope: the scope,
+    // which it cannot leave, is what tells the desktop portal who it is
+    // once it can change its root.
+    let manager = user_manager();
+    let nested = given("nested_sandbox") && manager;
+    if given("nested_sandbox") && !manager {
+        eprintln!(
+            "xapp: {} cannot make its own sandbox without the user's service manager",
+            m.app_id
+        );
+    }
     let filter = instance.0.join("seccomp.bpf");
-    fs::write(&filter, seccomp::bytes())?;
+    fs::write(&filter, seccomp::bytes(nested))?;
 
     // systemd-run --user --scope ... [systemd-cat -t xapp-<id>]
     //   sh -c 'exec bwrap --seccomp 9 "$@" 9<"$0"' <filter> <bwrap args> -- <command>
     // (the shell opens the filter as descriptor 9 for bwrap: the standard
     // library opens files so that they are closed for child programs).
     let mut cmd: Vec<String> = Vec::new();
-    if user_manager() {
+    if manager {
         cmd.extend(
             [
                 "systemd-run",
