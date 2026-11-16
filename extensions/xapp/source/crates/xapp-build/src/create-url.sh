@@ -86,32 +86,49 @@ mkdir -p "$r/var/lib/pacman"
 p() { pacman --config /tmp/pacman.conf --root "$r" --dbpath "$r/var/lib/pacman" "$@"; }
 p -Sy >/dev/null
 p -Fy >/dev/null
-# library -> package (the 64-bit one, in /usr/lib), one query for all.
+# library -> package, one query for all: the 64-bit one in /usr/lib, and
+# never a variant for hardware XeeonOS does not drive (CUDA, ROCm, NVIDIA)
+# when another package has the library too.
 mapfile -t all < <(cat /tmp/needed.sorted /tmp/named.sorted | sed 's|^|usr/lib/|')
 : > /tmp/owners
 if [[ ${#all[@]} -gt 0 ]]; then
     p -F --machinereadable "${all[@]}" 2>/dev/null | tr '\0' '\t' |
-        awk -F'\t' '$2 !~ /^lib32-/ {n=$4; sub(/.*\//, "", n); if (!(n in seen)) {seen[n]=1; print n " " $2}}' \
-        > /tmp/owners || true
+        awk -F'\t' '$2 !~ /^lib32-/ {n=$4; sub(/.*\//, "", n); print n " " $2}' > /tmp/owners || true
 fi
+heavy='(cuda|rocm|hip-|nvidia|opencl-)'
+owner() {
+    local all_owners
+    all_owners=$(awk -v l="$1" '$1 == l {print $2}' /tmp/owners)
+    grep -vE "$heavy" <<< "$all_owners" | head -n1 || true
+}
 : > missing.txt
-for kind in needs loads; do
-    src=/tmp/needed.sorted
-    [[ $kind == loads ]] && src=/tmp/named.sorted
-    : > "$kind.txt"
-    while IFS= read -r lib; do
-        [[ -n $lib ]] || continue
-        pkg=$(awk -v l="$lib" '$1 == l {print $2; exit}' /tmp/owners)
-        if [[ -n $pkg ]]; then
-            echo "$lib $pkg" >> "$kind.txt"
-        elif [[ $kind == needs ]]; then
-            echo "$lib" >> missing.txt
-        fi
-    done < "$src"
-done
-mapfile -t pkgs < <(cut -d' ' -f2 needs.txt loads.txt | sort -u)
-if [[ ${#pkgs[@]} -gt 0 ]]; then
-    p -Sp --print-format '%n' "${pkgs[@]}" > closure.txt
+: > needs.txt
+while IFS= read -r lib; do
+    [[ -n $lib ]] || continue
+    pkg=$(owner "$lib")
+    if [[ -n $pkg ]]; then echo "$lib $pkg" >> needs.txt; else echo "$lib" >> missing.txt; fi
+done < /tmp/needed.sorted
+mapfile -t chosen < <(cut -d' ' -f2 needs.txt | sort -u)
+# Libraries loaded while running: only packages that install together with
+# the others (no conflicts, like onnxruntime-cpu and -cuda).
+: > loads.txt
+while IFS= read -r lib; do
+    [[ -n $lib ]] || continue
+    pkg=$(owner "$lib")
+    [[ -n $pkg ]] || continue
+    if printf '%s\n' "${chosen[@]}" | grep -qxF "$pkg"; then
+        echo "$lib $pkg" >> loads.txt
+        continue
+    fi
+    if p -Sp --noconfirm --print-format '%n' "${chosen[@]}" "$pkg" >/dev/null 2>&1; then
+        chosen+=("$pkg")
+        echo "$lib $pkg" >> loads.txt
+    else
+        echo "create-url.sh: $lib left out ($pkg does not install with the others)" >&2
+    fi
+done < /tmp/named.sorted
+if [[ ${#chosen[@]} -gt 0 ]]; then
+    p -Sp --noconfirm --print-format '%n' "${chosen[@]}" > closure.txt
 else
     : > closure.txt
 fi
