@@ -47,6 +47,60 @@ pub fn build(args: &[String]) -> Result<u8> {
     Ok(0)
 }
 
+/// `xapp create --arch <package> [--snapshot YYYY/MM/DD] [--id <app id>]
+/// [--output <dir>] [--work <dir>] [--no-build]`: the wizard. It looks at
+/// the package, proposes a recipe and its permissions, writes the recipe,
+/// then (if the user wants) builds and installs the application.
+pub fn create(args: &[String]) -> Result<u8> {
+    let usage = "usage: xapp create --arch <package> [--snapshot YYYY/MM/DD] [--id <app id>] \
+                 [--output <dir>] [--no-build]";
+    let mut source = None;
+    let mut o = xapp_build::create::Options {
+        source: xapp_build::create::Source::Arch(String::new()),
+        snapshot: None,
+        app_id: None,
+        output: None,
+        work: None,
+    };
+    let mut build = true;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let mut value = || {
+            it.next()
+                .cloned()
+                .ok_or_else(|| err(format!("{a} needs a value")))
+        };
+        match a.as_str() {
+            "--arch" => source = Some(xapp_build::create::Source::Arch(value()?)),
+            "--snapshot" => o.snapshot = Some(value()?),
+            "--id" => o.app_id = Some(value()?),
+            "--output" | "-o" => o.output = Some(PathBuf::from(value()?)),
+            "--work" => o.work = Some(PathBuf::from(value()?)),
+            "--no-build" => build = false,
+            _ => return Err(err(usage)),
+        }
+    }
+    o.source = source.ok_or_else(|| err(usage))?;
+    let dir = xapp_build::create::create(&o)?;
+    println!("Recipe written: {}", dir.join("recipe.json").display());
+    if !build {
+        return Ok(0);
+    }
+    let q = xapp_core::ui::Question::yes_no(
+        "xapp create",
+        "Build the application now and put it in ~/Applications?",
+        "Build",
+        "Not now",
+        true,
+    );
+    let yes = xapp_core::ui::ask(&[q]).is_some_and(|a| a.first().is_some_and(|a| a == "yes"));
+    if !yes {
+        println!("Build it later with: xapp build {}", dir.display());
+        return Ok(0);
+    }
+    self::build(&[dir.display().to_string()])
+}
+
 /// `xapp sync [--quiet]`: run by xapp-sync.service (the monitor).
 pub fn sync(args: &[String]) -> Result<u8> {
     let quiet = args.iter().any(|a| a == "--quiet" || a == "-q");

@@ -36,7 +36,7 @@ delle applicazioni ufficiali stanno nel repository
 11. [La grafica (GPU)](#11-la-grafica-gpu)
 12. [I dialoghi](#12-i-dialoghi)
 13. [Aggiornamenti delle applicazioni](#13-aggiornamenti-delle-applicazioni)
-14. [Costruire una .xapp (xapp build)](#14-costruire-una-xapp-xapp-build)
+14. [Costruire una .xapp (xapp build, xapp create)](#14-costruire-una-xapp-xapp-build-xapp-create)
 15. [Il comando xapp](#15-il-comando-xapp)
 16. [Il codice](#16-il-codice)
 17. [Test](#17-test)
@@ -440,7 +440,7 @@ L'app non può aggiornarsi da sola (la sua immagine è in sola lettura): gli
 aggiornamenti interni, come quello di Firefox, vanno spenti nella ricetta.
 Gli aggiornamenti dalla rete non sono previsti per ora.
 
-## 14. Costruire una .xapp (xapp build)
+## 14. Costruire una .xapp (xapp build, xapp create)
 
 Una **ricetta** è una cartella con `recipe.json`:
 
@@ -491,12 +491,48 @@ della chiave in `XAPP_SIGNING_KEY`, oppure `~/.config/xapp/signing.key`
 devono avere la stessa chiave. `--root <cartella>` impacchetta una radice
 già pronta, senza container.
 
+### Il wizard (xapp create)
+
+Scrivere una ricetta a mano non serve: `xapp create` la propone partendo
+da un pacchetto Arch.
+
+```
+xapp create --arch gnome-calculator
+```
+
+1. in un container Arch guarda il pacchetto **nello snapshot del sistema**
+   (`XEEONOS_ARCH_SNAPSHOT` di `/usr/lib/os-release`, oppure
+   `--snapshot`): descrizione, versione, dipendenze, file;
+2. dalla voce di menu (`.desktop`) prende nome, nomi tradotti, comando,
+   icona (se il pacchetto non ce l'ha, la prende dal tema di icone dello
+   snapshot che la contiene e aggiunge quel pacchetto), categorie, tipi di
+   file e classe della finestra; l'id è il nome
+   del `.desktop` se è già in stile reverse-DNS, altrimenti
+   `org.xeeonos.arch.<pacchetto>` (`--id` per sceglierlo);
+3. **propone i permessi**, uno per domanda, con il motivo: guarda le
+   librerie che il pacchetto si porta dietro (curl, libsoup, nss, WebKit →
+   rete; Mesa, Vulkan, GTK4, Qt → GPU; libnotify, libadwaita → notifiche;
+   PipeWire, PulseAudio, ALSA, GStreamer → audio; libcamera, v4l →
+   fotocamera), le categorie (browser → Download) e i tipi di file che
+   apre (immagini → Immagini, PDF e testo → Documenti, ...). L'autore
+   conferma o toglie ognuno;
+4. scrive `<pacchetto>/recipe.json` (`--output` per un'altra cartella);
+5. chiede se costruire subito l'app e metterla in `~/Applications`
+   (`--no-build` per fermarsi alla ricetta).
+
+`--yes` accetta tutte le proposte (per la CI). `user_namespaces` non
+compare: lo decide `xapp build` (sezione 8). Prossime sorgenti: binari
+scaricati (`--url`, es. Firefox dal sito di Mozilla) e AUR (`--aur`, con
+il PKGBUILD mostrato prima di costruire).
+
 ## 15. Il comando xapp
 
 ```
 xapp run [--yes] <file|app> [argomenti]   avvia (anche quello che fa il doppio clic)
 xapp install [--yes] <file>               copia in ~/Applications
 xapp build <ricetta> [--key <file>] [--output <file>] [--no-install] [--root <dir>]
+xapp create --arch <pacchetto> [--snapshot AAAA/MM/GG] [--id <id>] [--output <dir>] [--no-build]
+                                          wizard: ricetta da un pacchetto Arch, poi build
 xapp list                                 le applicazioni di ~/Applications
 xapp info <app|file>                      cos'è, autore, snapshot, permessi
 xapp verify <file>                        firma e integrità, senza aprire
@@ -524,7 +560,7 @@ dentro xctl, e non richiede sudo.
 | `xapp-permissions` | catalogo dei permessi e scelte dell'utente |
 | `xapp-sandbox` | montaggio, seccomp, filtro D-Bus, GPU, riga di comando di bubblewrap, avvio nello scope |
 | `xapp-desktop` | registro, voci di menu, tipo di file, `xapp sync` |
-| `xapp-build` | `xapp build` (con `build-root.sh` per il container) |
+| `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`) |
 | `xapp` | il programma: legge la riga di comando |
 
 Dipendenze esterne, poche e note: `serde_json` (JSON), `sha2` (SHA-256),
