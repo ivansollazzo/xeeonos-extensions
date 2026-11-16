@@ -10,7 +10,9 @@
 # Usage: build-root.sh <snapshot YYYY/MM/DD> <package>...
 # Environment: XAPP_SCRIPT (a script of the recipe, run with ROOT=/work/root),
 #   XAPP_REMOVE (paths to delete, one per line, relative to the root),
-#   XAPP_ICON (path inside the root, starting with /, or in the recipe),
+#   XAPP_SOURCES (archives of the application's authors, one per line:
+#   "url sha256 /opt/<dir>"), XAPP_ICON (path inside the root, starting
+#   with /, or in the recipe),
 #   XAPP_CHOWN (uid:gid to give the results to).
 set -euo pipefail
 snapshot=${1:?snapshot missing}
@@ -70,6 +72,30 @@ q > "$out/packages.txt"
         echo "main=$(q "$1" | cut -d' ' -f2)"
     fi
 } > "$out/info"
+
+# The application's own archives (recipe "sources"): downloaded, checked
+# against their SHA-256, unpacked into their directory (without the one
+# directory everything is in, if there is one).
+while read -r src_url src_sum src_to; do
+    [[ -n ${src_url:-} ]] || continue
+    echo "Downloading $src_url..."
+    curl -fsSL --retry 3 -o /tmp/source "$src_url"
+    if ! echo "$src_sum  /tmp/source" | sha256sum -c --quiet -; then
+        echo "build-root.sh: $src_url is not the file of the recipe (SHA-256)" >&2
+        exit 1
+    fi
+    rm -rf /tmp/unpacked && mkdir -p /tmp/unpacked
+    bsdtar -xf /tmp/source -C /tmp/unpacked
+    rm -f /tmp/source
+    mapfile -t entries < <(ls -A /tmp/unpacked)
+    from=/tmp/unpacked
+    if [[ ${#entries[@]} -eq 1 && -d /tmp/unpacked/${entries[0]} ]]; then
+        from=/tmp/unpacked/${entries[0]}
+    fi
+    mkdir -p "$root${src_to}"
+    cp -a "$from/." "$root${src_to}/"
+    rm -rf /tmp/unpacked
+done <<< "${XAPP_SOURCES:-}"
 
 # A step of the recipe (e.g. settings files, official binaries).
 if [[ -n ${XAPP_SCRIPT:-} ]]; then

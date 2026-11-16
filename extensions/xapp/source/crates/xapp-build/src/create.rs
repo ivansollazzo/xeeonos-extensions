@@ -9,8 +9,15 @@
 //! each permission; the result is a recipe directory, `recipe.json`, to read,
 //! keep (xeeonos-applications) and build with `xapp build`.
 //!
-//! The package is looked at in an Arch Linux container (create-arch.sh),
-//! like `xapp build` does.
+//! From an archive the application's authors publish (`--url https://...`,
+//! e.g. Firefox from mozilla.org) it downloads it, records its SHA-256,
+//! finds the program to start and the icon, and the packages of the
+//! libraries its programs need (and, if the user wants, of those they load
+//! while running); the archive goes into /opt/<name> of the image (recipe
+//! `sources`).
+//!
+//! Both are looked at in an Arch Linux container (create-arch.sh,
+//! create-url.sh), like `xapp build` does.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,11 +29,14 @@ use xapp_core::ui::{self, Question};
 use xapp_core::util::{Result, err, gid, uid, valid_app_id};
 
 const ARCH_SCRIPT: &str = include_str!("create-arch.sh");
+const URL_SCRIPT: &str = include_str!("create-url.sh");
 
 /// Where the application comes from.
 pub enum Source {
     /// A package of the Arch Linux Archive snapshot.
     Arch(String),
+    /// An archive published by the application's authors (https://...).
+    Url(String),
 }
 
 /// Options of `xapp create`.
@@ -39,6 +49,10 @@ pub struct Options {
     /// The recipe directory; default: ./<package>.
     pub output: Option<PathBuf>,
     pub work: Option<PathBuf>,
+    /// `--url`: the program to start and the icon, as paths inside the
+    /// archive, when the wizard cannot tell.
+    pub exec: Option<String>,
+    pub icon: Option<String>,
 }
 
 /// What a .desktop file says (its [Desktop Entry] group).
@@ -430,10 +444,34 @@ fn default_app_id(stem: &str, pkg: &str) -> String {
     format!("org.xeeonos.arch.{clean}")
 }
 
-/// Look at the package in the container: work/info.txt, closure.txt,
-/// files.txt, pkgroot/.
-fn look_at_package(work: &Path, snapshot: &str, pkg: &str) -> Result<()> {
-    fs::write(work.join("create-arch.sh"), ARCH_SCRIPT)?;
+/// What the wizard found, before the questions.
+struct Found {
+    /// The default name of the recipe directory and of the work directory.
+    short: String,
+    app_id: String,
+    name: String,
+    names: Vec<(String, String)>,
+    description: String,
+    /// Shown in the summary; written in the recipe only for an archive.
+    version: String,
+    write_version: bool,
+    exec: Vec<String>,
+    icon: String,
+    categories: Vec<String>,
+    mime_types: Vec<String>,
+    wm_class: String,
+    packages: Vec<String>,
+    /// Packages the program loads while running: asked before adding.
+    loads: Vec<String>,
+    closure: Vec<String>,
+    sources: Vec<Value>,
+    /// More lines for the summary.
+    notes: Vec<String>,
+}
+
+/// Run a script of the wizard in an Arch Linux container, on work/.
+fn in_container(work: &Path, script: &str, body: &str, args: &[&str], what: &str) -> Result<()> {
+    fs::write(work.join(script), body)?;
     let engine = crate::engine()?;
     let mut cmd = Command::new(&engine);
     cmd.args(["run", "--rm"])
@@ -443,77 +481,69 @@ fn look_at_package(work: &Path, snapshot: &str, pkg: &str) -> Result<()> {
         cmd.args(["--env", &format!("XAPP_CHOWN={}:{}", uid(), gid())]);
     }
     cmd.arg(crate::container_image())
-        .args(["/bin/bash", "/work/create-arch.sh", snapshot, pkg]);
-    println!("Looking at {pkg} in the Arch snapshot {snapshot} ({engine})...");
+        .args(["/bin/bash", &format!("/work/{script}")])
+        .args(args);
+    println!("{what} ({engine})...");
     let status = cmd
         .status()
         .map_err(|e| err(format!("cannot run {engine}: {e}")))?;
     if !status.success() {
-        return Err(err(format!("could not read the package {pkg} ({status})")));
+        return Err(err(format!("{what}: failed ({status})")));
     }
     Ok(())
 }
 
-/// Make the recipe; returns its directory.
-pub fn create(o: &Options) -> Result<PathBuf> {
-    let Source::Arch(pkg) = &o.source;
-    let snapshot = o
-        .snapshot
-        .clone()
-        .or_else(system_snapshot)
-        .ok_or_else(|| err("which Arch snapshot? (--snapshot YYYY/MM/DD)"))?;
-    if xapp_core::date::parse(&snapshot).is_none() {
-        return Err(err("the snapshot must be a date, YYYY/MM/DD"));
-    }
-    let output = o.output.clone().unwrap_or_else(|| PathBuf::from(pkg));
-    if output.join("recipe.json").exists() {
-        return Err(err(format!(
-            "{} already has a recipe.json",
-            output.display()
-        )));
-    }
-    let work = o
-        .work
-        .clone()
-        .unwrap_or_else(|| paths::cache_home().join("xapp/create").join(pkg));
-    fs::create_dir_all(&work)?;
-    let work = fs::canonicalize(&work)?;
-    look_at_package(&work, &snapshot, pkg)?;
+/// The lines of a file of work/ (none if it is missing).
+fn lines_of(work: &Path, f: &str) -> Vec<String> {
+    fs::read_to_string(work.join(f))
+        .unwrap_or_default()
+        .lines()
+        .map(String::from)
+        .collect()
+}
 
+/// The application id given with --id, checked.
+fn chosen_id(o: &Options) -> Result<Option<String>> {
+    match &o.app_id {
+        Some(id) if valid_app_id(id) => Ok(Some(id.clone())),
+        Some(id) => Err(err(format!("\"{id}\" is not a valid application id"))),
+        None => Ok(None),
+    }
+}
+
+/// `--arch <package>`.
+fn from_arch(o: &Options, pkg: &str, snapshot: &str, work: &Path) -> Result<Found> {
+    in_container(
+        work,
+        "create-arch.sh",
+        ARCH_SCRIPT,
+        &[snapshot, pkg],
+        &format!("Looking at {pkg} in the Arch snapshot {snapshot}"),
+    )?;
     let info = fs::read_to_string(work.join("info.txt"))?;
-    let lines = |f: &str| -> Vec<String> {
-        fs::read_to_string(work.join(f))
-            .unwrap_or_default()
-            .lines()
-            .map(String::from)
-            .collect()
-    };
-    let closure = lines("closure.txt");
-    let files = lines("files.txt");
+    let closure = lines_of(work, "closure.txt");
+    let files = lines_of(work, "files.txt");
     let (stem, d) = pick_desktop(&work.join("pkgroot/usr/share/applications"), pkg).ok_or_else(|| {
         err(format!(
             "{pkg} has no menu entry (.desktop): it is not an application with windows, or its entry is in another package"
         ))
     })?;
-    let app_id = match &o.app_id {
-        Some(id) if valid_app_id(id) => id.clone(),
-        Some(id) => return Err(err(format!("\"{id}\" is not a valid application id"))),
-        None => default_app_id(&stem, pkg),
-    };
+    let app_id = chosen_id(o)?.unwrap_or_else(|| default_app_id(&stem, pkg));
     let exec = command(&d.exec, &files)
         .ok_or_else(|| err(format!("the menu entry of {pkg} has no command")))?;
     // The icon: in the package, else in an icon theme (then that package
     // goes in the recipe too, unless the package already brings it).
-    let mut packages = vec![pkg.clone()];
+    let mut packages = vec![pkg.to_string()];
     let icon = match icon_path(&d.icon, &files) {
         Some(icon) => icon,
         None => {
-            let (owner, icon) = theme_icon(&d.icon, &lines("icons.txt"), &closure).ok_or_else(|| {
-                err(format!(
-                    "no icon \"{}\" in {pkg} or in an icon theme: write the recipe's icon by hand",
-                    d.icon
-                ))
-            })?;
+            let (owner, icon) = theme_icon(&d.icon, &lines_of(work, "icons.txt"), &closure)
+                .ok_or_else(|| {
+                    err(format!(
+                        "no icon \"{}\" in {pkg} or in an icon theme: write the recipe's icon by hand",
+                        d.icon
+                    ))
+                })?;
             if !closure.contains(&owner) {
                 packages.push(owner);
             }
@@ -530,19 +560,422 @@ pub fn create(o: &Options) -> Result<PathBuf> {
     } else {
         d.wm_class.clone()
     };
+    Ok(Found {
+        short: pkg.to_string(),
+        app_id,
+        name: d.name,
+        names: d.names,
+        description,
+        version: si_field(&info, "Version"),
+        write_version: false,
+        exec,
+        icon,
+        categories: d.categories,
+        mime_types: d.mime_types,
+        wm_class,
+        notes: vec![format!("Packages: {} (from {pkg})", closure.len())],
+        packages,
+        loads: Vec::new(),
+        closure,
+        sources: Vec::new(),
+    })
+}
 
-    // The permissions: proposed, then confirmed one by one.
-    let proposals = propose(&closure, &d.categories, &d.mime_types);
+/// The file name of an address, without the query.
+fn url_file(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or_default();
+    path.rsplit('/').next().unwrap_or_default().to_string()
+}
+
+/// "firefox-147.0.1.tar.xz" -> ("firefox", "147.0.1"): the name, and the
+/// version if the file name has one.
+pub fn name_and_version(file: &str) -> (String, String) {
+    let mut stem = file.to_string();
+    for ext in [
+        ".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tgz", ".txz", ".tbz2", ".zip", ".tar",
+    ] {
+        if let Some(s) = stem.strip_suffix(ext) {
+            stem = s.to_string();
+            break;
+        }
+    }
+    // The version starts at the first "-", "_" or "." followed by a digit.
+    let b = stem.as_bytes();
+    let cut = (1..b.len()).find(|&i| {
+        matches!(b[i - 1], b'-' | b'_' | b'.' | b'v') && b[i].is_ascii_digit() && {
+            // "v1.2": the v belongs to the version.
+            b[i - 1] != b'v' || (i >= 2 && matches!(b[i - 2], b'-' | b'_'))
+        }
+    });
+    let (name, version) = match cut {
+        Some(i) => {
+            let start = if b[i - 1] == b'v' { i - 2 } else { i - 1 };
+            (&stem[..start], &stem[i..])
+        }
+        None => (stem.as_str(), ""),
+    };
+    // The version ends where the platform begins (linux-x86_64, amd64...).
+    let version = version
+        .split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('.');
+    (name.to_lowercase(), version.to_string())
+}
+
+/// An application id from where the application comes from:
+/// download.mozilla.org + firefox -> org.mozilla.firefox,
+/// github.com/owner/... -> io.github.owner.<name>.
+pub fn id_from_url(url: &str, name: &str) -> String {
+    let clean = |s: &str| -> String {
+        s.chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' {
+                    c.to_ascii_lowercase()
+                } else {
+                    '_'
+                }
+            })
+            .collect()
+    };
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let mut parts = rest.split('/');
+    let host = parts.next().unwrap_or_default();
+    let host = host.rsplit_once(':').map_or(host, |(h, _)| h);
+    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
+    let id = if host == "github.com" || host == "gitlab.com" || host == "codeberg.org" {
+        let owner = parts.next().unwrap_or("app");
+        let tld = if host == "github.com" {
+            "io.github"
+        } else if host == "gitlab.com" {
+            "io.gitlab"
+        } else {
+            "org.codeberg"
+        };
+        format!("{tld}.{}.{}", clean(owner), clean(name))
+    } else if labels.len() >= 2 && !labels.iter().all(|l| l.chars().all(|c| c.is_ascii_digit())) {
+        let n = labels.len();
+        format!(
+            "{}.{}.{}",
+            clean(labels[n - 1]),
+            clean(labels[n - 2]),
+            clean(name)
+        )
+    } else {
+        format!("org.xeeonos.app.{}", clean(name))
+    };
+    if valid_app_id(&id) {
+        id
+    } else {
+        format!("org.xeeonos.app.{}", clean(name))
+    }
+}
+
+/// The program to start, among the archive's programs: `--exec`, else the
+/// one named like the application at the top, else the only one at the top.
+pub fn pick_program(programs: &[String], name: &str, chosen: Option<&str>) -> Option<String> {
+    if let Some(c) = chosen {
+        return programs
+            .iter()
+            .find(|p| p.as_str() == c.trim_start_matches('/'))
+            .cloned();
+    }
+    let top: Vec<&String> = programs.iter().filter(|p| !p.contains('/')).collect();
+    let named = |list: &[&String]| {
+        list.iter()
+            .find(|p| {
+                p.eq_ignore_ascii_case(name) || p.to_lowercase().starts_with(&format!("{name}-bin"))
+            })
+            .map(|p| p.to_string())
+    };
+    named(&top)
+        .or_else(|| (top.len() == 1).then(|| top[0].clone()))
+        .or_else(|| {
+            let all: Vec<&String> = programs.iter().collect();
+            named(&all)
+        })
+}
+
+/// The icon of an archive: an image named after the menu entry's Icon=,
+/// else the biggest image in a directory or file called *icon* (SVG first).
+pub fn archive_icon(files: &[String], icon_name: &str) -> Option<String> {
+    let size = |path: &str| -> u32 {
+        let name = path.rsplit('/').next().unwrap_or_default();
+        let digits = |s: &str| -> u32 {
+            s.split(|c: char| !c.is_ascii_digit())
+                .filter_map(|d| d.parse::<u32>().ok())
+                .filter(|n| *n <= 1024)
+                .max()
+                .unwrap_or(0)
+        };
+        digits(name).max(path.split('/').map(digits).max().unwrap_or(0))
+    };
+    let images = files
+        .iter()
+        .filter(|f| f.ends_with(".png") || f.ends_with(".svg"));
+    let best = |list: Vec<&String>| {
+        list.into_iter()
+            .max_by_key(|f| (f.ends_with(".svg"), size(f), std::cmp::Reverse(f.len())))
+            .cloned()
+    };
+    if !icon_name.is_empty() {
+        let named: Vec<&String> = images
+            .clone()
+            .filter(|f| {
+                let n = f.rsplit('/').next().unwrap_or_default();
+                n.strip_suffix(".png").or_else(|| n.strip_suffix(".svg")) == Some(icon_name)
+            })
+            .collect();
+        if let Some(f) = best(named) {
+            return Some(f);
+        }
+    }
+    best(
+        images
+            .filter(|f| f.to_lowercase().contains("icon") && !f.contains("symbolic"))
+            .collect(),
+    )
+}
+
+/// `--url <address>`: an archive with the application's own files, put in
+/// /opt/<name> of the image; the libraries it needs come from packages.
+fn from_url(o: &Options, url: &str, snapshot: &str, work: &Path) -> Result<Found> {
+    in_container(
+        work,
+        "create-url.sh",
+        URL_SCRIPT,
+        &[snapshot, url],
+        &format!("Looking at {url} (libraries from the Arch snapshot {snapshot})"),
+    )?;
+    let first = |f: &str| lines_of(work, f).into_iter().next().unwrap_or_default();
+    let final_url = first("url.txt");
+    let sha256 = first("sha256.txt");
+    if sha256.len() != 64 {
+        return Err(err("the download has no SHA-256"));
+    }
+    let files = lines_of(work, "files.txt");
+    let programs = lines_of(work, "programs.txt");
+    let (file_name, file_version) = name_and_version(&url_file(&final_url));
+    let top = first("top.txt");
+    let short = if !top.is_empty() && name_and_version(&top).0.len() > 1 {
+        name_and_version(&top).0
+    } else {
+        file_name.clone()
+    };
+    let short: String = short
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        .collect();
+    if short.is_empty() {
+        return Err(err("cannot tell the application's name from the address"));
+    }
+    let to = format!("/opt/{short}");
+
+    // A menu entry inside the archive, if there is one.
+    let desktop = files
+        .iter()
+        .filter(|f| f.ends_with(".desktop"))
+        .filter_map(|f| {
+            let d = parse_desktop(&fs::read_to_string(work.join("tree").join(f)).ok()?);
+            (!d.hidden).then_some(d)
+        })
+        .next()
+        .unwrap_or_default();
+    let from_desktop = exec_words(&desktop.exec)
+        .first()
+        .map(|w| w.rsplit('/').next().unwrap_or_default().to_string());
+    let program = o
+        .exec
+        .as_deref()
+        .and_then(|e| pick_program(&programs, &short, Some(e)))
+        .or_else(|| {
+            from_desktop.as_ref().and_then(|n| {
+                programs
+                    .iter()
+                    .find(|p| p.rsplit('/').next() == Some(n.as_str()))
+                    .cloned()
+            })
+        })
+        .or_else(|| pick_program(&programs, &short, None))
+        .ok_or_else(|| {
+            err(format!(
+                "which program starts it? Programs in the archive: {} (--exec <one of them>)",
+                if programs.is_empty() {
+                    "none".to_string()
+                } else {
+                    programs.join(", ")
+                }
+            ))
+        })?;
+    let mut exec = vec![format!("{to}/{program}")];
+    exec.extend(exec_words(&desktop.exec).into_iter().skip(1));
+    let icon = match &o.icon {
+        Some(i) => i.trim_start_matches('/').to_string(),
+        None => archive_icon(&files, &desktop.icon)
+            .ok_or_else(|| err("no icon in the archive (--icon <path of a .png or .svg in it>)"))?,
+    };
+    if !files.contains(&icon) {
+        return Err(err(format!("no {icon} in the archive")));
+    }
+
+    let pkgs = |f: &str| -> Vec<String> {
+        let mut v: Vec<String> = lines_of(work, f)
+            .iter()
+            .filter_map(|l| l.split_once(' ').map(|(_, p)| p.to_string()))
+            .filter(|p| p != "glibc")
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let packages = pkgs("needs.txt");
+    let loads: Vec<String> = pkgs("loads.txt")
+        .into_iter()
+        .filter(|p| !packages.contains(p))
+        .collect();
+    let missing = lines_of(work, "missing.txt");
+    let mut notes = vec![
+        format!("From: {final_url}"),
+        format!("SHA-256: {sha256}"),
+        format!("Into: {to}"),
+        format!(
+            "Libraries from packages: {}",
+            if packages.is_empty() {
+                "none".into()
+            } else {
+                packages.join(" ")
+            }
+        ),
+    ];
+    if !missing.is_empty() {
+        notes.push(format!(
+            "Not in any package (it may not start): {}",
+            missing.join(" ")
+        ));
+    }
+    let name = if desktop.name.is_empty() {
+        let mut c = short.chars();
+        c.next()
+            .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+            .unwrap_or_default()
+    } else {
+        desktop.name.clone()
+    };
+    let version = if file_version.is_empty() {
+        name_and_version(&top).1
+    } else {
+        file_version
+    };
+    let version = if version.is_empty() {
+        "1".to_string()
+    } else {
+        version
+    };
+    Ok(Found {
+        app_id: chosen_id(o)?.unwrap_or_else(|| id_from_url(url, &short)),
+        description: if desktop.comment.is_empty() {
+            name.clone()
+        } else {
+            desktop.comment.clone()
+        },
+        names: desktop.names,
+        name,
+        version,
+        write_version: true,
+        exec,
+        icon: format!("{to}/{icon}"),
+        categories: desktop.categories,
+        mime_types: desktop.mime_types,
+        wm_class: if desktop.wm_class.is_empty() {
+            short.clone()
+        } else {
+            desktop.wm_class
+        },
+        packages,
+        loads,
+        closure: lines_of(work, "closure.txt"),
+        sources: vec![json!({"url": final_url, "sha256": sha256, "to": to})],
+        notes,
+        short,
+    })
+}
+
+/// Make the recipe; returns its directory.
+pub fn create(o: &Options) -> Result<PathBuf> {
+    let snapshot = o
+        .snapshot
+        .clone()
+        .or_else(system_snapshot)
+        .ok_or_else(|| err("which Arch snapshot? (--snapshot YYYY/MM/DD)"))?;
+    if xapp_core::date::parse(&snapshot).is_none() {
+        return Err(err("the snapshot must be a date, YYYY/MM/DD"));
+    }
+    let key = match &o.source {
+        Source::Arch(pkg) => pkg.clone(),
+        Source::Url(url) => {
+            if !url.starts_with("https://") {
+                return Err(err("the address must start with https://"));
+            }
+            let (name, _) = name_and_version(&url_file(url));
+            if name.is_empty() {
+                "download".into()
+            } else {
+                name
+            }
+        }
+    };
+    let work = o
+        .work
+        .clone()
+        .unwrap_or_else(|| paths::cache_home().join("xapp/create").join(&key));
+    fs::create_dir_all(&work)?;
+    let work = fs::canonicalize(&work)?;
+    if let Some(out) = &o.output
+        && out.join("recipe.json").exists()
+    {
+        return Err(err(format!("{} already has a recipe.json", out.display())));
+    }
+    let f = match &o.source {
+        Source::Arch(pkg) => from_arch(o, pkg, &snapshot, &work)?,
+        Source::Url(url) => from_url(o, url, &snapshot, &work)?,
+    };
+    let output = o.output.clone().unwrap_or_else(|| PathBuf::from(&f.short));
+    if output.join("recipe.json").exists() {
+        return Err(err(format!(
+            "{} already has a recipe.json",
+            output.display()
+        )));
+    }
+
+    // The questions: the summary, the libraries it loads (if any), then
+    // the permissions, one by one.
+    let proposals = propose(&f.closure, &f.categories, &f.mime_types);
     let summary = format!(
-        "{} {} ({app_id})\n{description}\n\nCommand: {}\nIcon: {icon}\nPackages: {} (from {})\n\n\
+        "{} {} ({})\n{}\n\nCommand: {}\nIcon: {}\n{}\n\n\
          The next questions propose the permissions it probably needs.",
-        d.name,
-        si_field(&info, "Version"),
-        exec.join(" "),
-        closure.len(),
-        pkg
+        f.name,
+        f.version,
+        f.app_id,
+        f.description,
+        f.exec.join(" "),
+        f.icon,
+        f.notes.join("\n"),
     );
     let mut questions = vec![Question::message("xapp create", &summary)];
+    if !f.loads.is_empty() {
+        questions.push(Question::yes_no(
+            "xapp create: libraries",
+            &format!(
+                "Its programs name libraries they may load while running (sound, video, \
+                 graphics, printing...). Put their packages in the application too?\n\n{}",
+                f.loads.join(" ")
+            ),
+            "Put them in",
+            "Leave them out",
+            true,
+        ));
+    }
+    let first_permission = questions.len();
     for p in &proposals {
         let label = xapp_permissions::info(p.id).map_or(p.id, |i| i.label);
         questions.push(Question::yes_no(
@@ -558,44 +991,53 @@ pub fn create(o: &Options) -> Result<PathBuf> {
     }
     let answers =
         ui::ask(&questions).ok_or_else(|| err("nobody to answer the wizard (use --yes)"))?;
+    let mut packages = f.packages.clone();
+    if !f.loads.is_empty() && answers.get(1).is_some_and(|a| a == "yes") {
+        packages.extend(f.loads.iter().cloned());
+    }
     let permissions: Vec<Value> = proposals
         .iter()
-        .zip(answers.iter().skip(1))
+        .zip(answers.iter().skip(first_permission))
         .filter(|(_, a)| *a == "yes")
         .map(|(p, _)| json!({"id": p.id, "reason": p.reason}))
         .collect();
 
-    let names: Map<String, Value> = d
+    let names: Map<String, Value> = f
         .names
         .iter()
-        .filter(|(_, n)| *n != d.name)
+        .filter(|(_, n)| *n != f.name)
         .map(|(l, n)| (l.clone(), json!(n)))
         .collect();
     let mut recipe = Map::new();
-    recipe.insert("app_id".into(), json!(app_id));
-    recipe.insert("name".into(), json!(d.name));
+    recipe.insert("app_id".into(), json!(f.app_id));
+    recipe.insert("name".into(), json!(f.name));
     if !names.is_empty() {
         recipe.insert("names".into(), Value::Object(names));
     }
-    recipe.insert("description".into(), json!(description));
+    recipe.insert("description".into(), json!(f.description));
+    if f.write_version {
+        recipe.insert("version".into(), json!(f.version));
+    }
     recipe.insert("snapshot".into(), json!(snapshot));
     recipe.insert("packages".into(), json!(packages));
-    recipe.insert("exec".into(), json!(exec));
+    if !f.sources.is_empty() {
+        recipe.insert("sources".into(), Value::Array(f.sources.clone()));
+    }
+    recipe.insert("exec".into(), json!(f.exec));
     recipe.insert("gpu".into(), json!("host"));
     recipe.insert("permissions".into(), Value::Array(permissions));
-    if !d.mime_types.is_empty() {
-        recipe.insert("mime_types".into(), json!(d.mime_types));
+    if !f.mime_types.is_empty() {
+        recipe.insert("mime_types".into(), json!(f.mime_types));
     }
-    if !d.categories.is_empty() {
-        recipe.insert("categories".into(), json!(d.categories));
+    if !f.categories.is_empty() {
+        recipe.insert("categories".into(), json!(f.categories));
     }
-    recipe.insert("wm_class".into(), json!(wm_class));
-    recipe.insert("icon".into(), json!(icon));
+    recipe.insert("wm_class".into(), json!(f.wm_class));
+    recipe.insert("icon".into(), json!(f.icon));
     let mut text = serde_json::to_vec_pretty(&Value::Object(recipe)).unwrap_or_default();
     text.push(b'\n');
     fs::create_dir_all(&output)?;
     fs::write(output.join("recipe.json"), text)?;
-    println!("Recipe: {}", output.join("recipe.json").display());
     Ok(output)
 }
 
@@ -726,5 +1168,100 @@ mod tests {
         );
         assert_eq!(default_app_id("gimp", "gimp"), "org.xeeonos.arch.gimp");
         assert_eq!(default_app_id("vlc", "vlc-git"), "org.xeeonos.arch.vlc_git");
+    }
+
+    #[test]
+    fn names_and_versions() {
+        let nv = |f: &str| {
+            let (n, v) = name_and_version(f);
+            (n, v)
+        };
+        assert_eq!(
+            nv("firefox-147.0.1.tar.xz"),
+            ("firefox".into(), "147.0.1".into())
+        );
+        assert_eq!(
+            nv("Obsidian-1.8.10.tar.gz"),
+            ("obsidian".into(), "1.8.10".into())
+        );
+        assert_eq!(
+            nv("app_v2.3-linux-x86_64.tar.gz"),
+            ("app".into(), "2.3".into())
+        );
+        assert_eq!(nv("thunderbird.tar.bz2"), ("thunderbird".into(), "".into()));
+        assert_eq!(nv("libreoffice7.zip").0, "libreoffice7");
+    }
+
+    #[test]
+    fn ids_from_urls() {
+        assert_eq!(
+            id_from_url(
+                "https://download-installer.cdn.mozilla.net/pub/firefox/x.tar.xz",
+                "firefox"
+            ),
+            "net.mozilla.firefox"
+        );
+        assert_eq!(
+            id_from_url(
+                "https://ftp.mozilla.org/pub/firefox/releases/147.0/linux-x86_64/en-US/firefox-147.0.tar.xz",
+                "firefox"
+            ),
+            "org.mozilla.firefox"
+        );
+        assert_eq!(
+            id_from_url(
+                "https://github.com/Some-Owner/tool/releases/download/v1/tool.tar.gz",
+                "tool"
+            ),
+            "io.github.some_owner.tool"
+        );
+        assert_eq!(
+            id_from_url("https://10.0.0.1/a.tar", "a"),
+            "org.xeeonos.app.a"
+        );
+    }
+
+    #[test]
+    fn programs() {
+        let p: Vec<String> = [
+            "firefox",
+            "firefox-bin",
+            "glxtest",
+            "plugin-container",
+            "gmp/helper",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(pick_program(&p, "firefox", None).unwrap(), "firefox");
+        assert_eq!(
+            pick_program(&p, "firefox", Some("/glxtest")).unwrap(),
+            "glxtest"
+        );
+        assert!(pick_program(&p, "firefox", Some("nothing")).is_none());
+        let one = vec!["App".to_string(), "lib/helper".to_string()];
+        assert_eq!(pick_program(&one, "other", None).unwrap(), "App");
+        let many = vec!["a".to_string(), "b".to_string()];
+        assert!(pick_program(&many, "c", None).is_none());
+    }
+
+    #[test]
+    fn archive_icons() {
+        let files: Vec<String> = [
+            "browser/chrome/icons/default/default16.png",
+            "browser/chrome/icons/default/default128.png",
+            "browser/chrome/icons/default/default48.png",
+            "browser/features/x/background.png",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            archive_icon(&files, "").unwrap(),
+            "browser/chrome/icons/default/default128.png"
+        );
+        let named: Vec<String> = ["share/app.png", "share/icons/256x256/other.png"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(archive_icon(&named, "app").unwrap(), "share/app.png");
+        assert!(archive_icon(&["a.txt".to_string()], "").is_none());
     }
 }

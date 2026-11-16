@@ -18,6 +18,7 @@
 //!   "wm_class": "firefox",
 //!   "icon": "/usr/share/icons/hicolor/128x128/apps/firefox.png",
 //!   "remove": ["usr/lib/firefox/updater"],
+//!   "sources": [{"url": "https://.../app-1.0.tar.xz", "sha256": "...", "to": "/opt/app"}],
 //!   "script": "build.sh"
 //! }
 //! ```
@@ -28,6 +29,9 @@
 //! `"user_namespaces": true|false`.
 //!
 //! `version` may be left out: it is then the version of the first package.
+//! `sources` are archives of the application's authors (official binaries):
+//! downloaded, checked against their SHA-256 and unpacked in their `to`
+//! directory (/opt/<name>), after the packages.
 //! The packages are installed with pacman, from the Arch Linux Archive
 //! snapshot of the recipe, in an Arch Linux container (podman or docker);
 //! the result becomes the erofs image of the .xapp, signed with the
@@ -68,6 +72,7 @@ struct ContainerBuild<'a> {
     icon: &'a str,
     script: &'a str,
     remove: &'a [String],
+    sources: &'a [String],
     snapshot: &'a str,
     packages: &'a [String],
 }
@@ -85,7 +90,8 @@ fn image_in_container(b: &ContainerBuild, app_id: &str) -> Result<()> {
         .arg(format!("{}:/recipe:ro", b.recipe_dir.display()))
         .args(["--env", &format!("XAPP_ICON={}", b.icon)])
         .args(["--env", &format!("XAPP_SCRIPT={}", b.script)])
-        .args(["--env", &format!("XAPP_REMOVE={}", b.remove.join("\n"))]);
+        .args(["--env", &format!("XAPP_REMOVE={}", b.remove.join("\n"))])
+        .args(["--env", &format!("XAPP_SOURCES={}", b.sources.join("\n"))]);
     if engine.ends_with("docker") {
         // Docker's root is the real root: give the results back to the user.
         cmd.args(["--env", &format!("XAPP_CHOWN={}:{}", uid(), gid())]);
@@ -256,6 +262,37 @@ fn package_version(v: &str) -> String {
     v.rsplit_once('-').map_or(v, |(ver, _)| ver).to_string()
 }
 
+/// The recipe's `sources`, checked, as "url sha256 to" lines.
+fn sources(r: &Value) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for s in r
+        .get("sources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let (url, sum, to) = (text(s, "url"), text(s, "sha256"), text(s, "to"));
+        if !url.starts_with("https://") || url.contains(char::is_whitespace) {
+            return Err(err(format!(
+                "recipe: source \"{url}\" must be an https:// address"
+            )));
+        }
+        if sum.len() != 64 || !sum.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(err(format!("recipe: source {url} needs its sha256")));
+        }
+        let ok_to = to.strip_prefix("/opt/").is_some_and(|d| {
+            !d.is_empty() && !d.contains("..") && !d.contains(char::is_whitespace)
+        });
+        if !ok_to {
+            return Err(err(format!(
+                "recipe: source {url} goes \"to\" a directory of /opt (/opt/<name>)"
+            )));
+        }
+        out.push(format!("{url} {} {to}", sum.to_lowercase()));
+    }
+    Ok(out)
+}
+
 /// Build the .xapp; returns its path.
 pub fn build(o: &Options) -> Result<PathBuf> {
     let recipe_path = o.recipe.join("recipe.json");
@@ -294,6 +331,7 @@ pub fn build(o: &Options) -> Result<PathBuf> {
             )));
         }
     }
+    let sources = sources(&r)?;
     let key = signing_key(&o.key)?;
 
     // 1. The image, made in a container.
@@ -314,6 +352,7 @@ pub fn build(o: &Options) -> Result<PathBuf> {
                 icon: &icon,
                 script: &text(&r, "script"),
                 remove: &list(&r, "remove"),
+                sources: &sources,
                 snapshot: &snapshot,
                 packages: &packages,
             };
@@ -488,5 +527,24 @@ mod tests {
         assert!(own_sandbox(["usr/lib/webkitgtk-6.0/WebKitWebProcess"]).is_some());
         // A name, not a part of one.
         assert_eq!(own_sandbox(["usr/share/doc/chrome-sandbox.txt"]), None);
+    }
+
+    #[test]
+    fn recipe_sources() {
+        let sum = "a".repeat(64);
+        let ok = serde_json::json!({"sources": [{"url": "https://x.org/a.tar.xz", "sha256": sum, "to": "/opt/a"}]});
+        assert_eq!(
+            sources(&ok).unwrap(),
+            [format!("https://x.org/a.tar.xz {sum} /opt/a")]
+        );
+        for bad in [
+            serde_json::json!({"sources": [{"url": "http://x.org/a", "sha256": sum, "to": "/opt/a"}]}),
+            serde_json::json!({"sources": [{"url": "https://x.org/a", "sha256": "12", "to": "/opt/a"}]}),
+            serde_json::json!({"sources": [{"url": "https://x.org/a", "sha256": sum, "to": "/usr/a"}]}),
+            serde_json::json!({"sources": [{"url": "https://x.org/a", "sha256": sum, "to": "/opt/../etc"}]}),
+        ] {
+            assert!(sources(&bad).is_err(), "{bad}");
+        }
+        assert!(sources(&serde_json::json!({})).unwrap().is_empty());
     }
 }
