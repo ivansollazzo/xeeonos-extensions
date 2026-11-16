@@ -204,6 +204,46 @@ pub fn icon_path(icon: &str, files: &[String]) -> Option<String> {
     })
 }
 
+/// A menu icon the package does not have, from an icon theme of the
+/// snapshot: `candidates` are "package path" lines (create-arch.sh,
+/// icons.txt). Prefers a package already in the closure, then hicolor, then
+/// SVG, then the biggest size. Returns (package, path).
+pub fn theme_icon(
+    icon: &str,
+    candidates: &[String],
+    closure: &[String],
+) -> Option<(String, String)> {
+    let size = |path: &str| -> u32 {
+        path.split('/')
+            .filter_map(|part| part.split(['x', '@']).next()?.parse::<u32>().ok())
+            .max()
+            .unwrap_or(0)
+    };
+    candidates
+        .iter()
+        .filter_map(|l| {
+            let (pkg, path) = l.split_once(' ')?;
+            let name = path.rsplit('/').next()?;
+            let ext = name.strip_prefix(icon)?.strip_prefix('.')?;
+            matches!(ext, "png" | "svg").then_some((pkg, path, ext))
+        })
+        .max_by_key(|(pkg, path, ext)| {
+            (
+                closure.iter().any(|c| c == pkg),
+                path.contains("/hicolor/"),
+                !path.contains("/symbolic/") && !path.ends_with("-symbolic.svg"),
+                *ext == "svg",
+                size(path),
+            )
+        })
+        .map(|(pkg, path, _)| {
+            (
+                pkg.to_string(),
+                format!("/{}", path.trim_start_matches('/')),
+            )
+        })
+}
+
 /// A permission proposed by the wizard, with the reason it gives.
 #[derive(Debug, PartialEq)]
 pub struct Proposal {
@@ -462,12 +502,24 @@ pub fn create(o: &Options) -> Result<PathBuf> {
     };
     let exec = command(&d.exec, &files)
         .ok_or_else(|| err(format!("the menu entry of {pkg} has no command")))?;
-    let icon = icon_path(&d.icon, &files).ok_or_else(|| {
-        err(format!(
-            "no icon \"{}\" in {pkg}: write the recipe's icon by hand",
-            d.icon
-        ))
-    })?;
+    // The icon: in the package, else in an icon theme (then that package
+    // goes in the recipe too, unless the package already brings it).
+    let mut packages = vec![pkg.clone()];
+    let icon = match icon_path(&d.icon, &files) {
+        Some(icon) => icon,
+        None => {
+            let (owner, icon) = theme_icon(&d.icon, &lines("icons.txt"), &closure).ok_or_else(|| {
+                err(format!(
+                    "no icon \"{}\" in {pkg} or in an icon theme: write the recipe's icon by hand",
+                    d.icon
+                ))
+            })?;
+            if !closure.contains(&owner) {
+                packages.push(owner);
+            }
+            icon
+        }
+    };
     let description = if d.comment.is_empty() {
         si_field(&info, "Description")
     } else {
@@ -527,7 +579,7 @@ pub fn create(o: &Options) -> Result<PathBuf> {
     }
     recipe.insert("description".into(), json!(description));
     recipe.insert("snapshot".into(), json!(snapshot));
-    recipe.insert("packages".into(), json!([pkg]));
+    recipe.insert("packages".into(), json!(packages));
     recipe.insert("exec".into(), json!(exec));
     recipe.insert("gpu".into(), json!("host"));
     recipe.insert("permissions".into(), Value::Array(permissions));
@@ -612,6 +664,34 @@ mod tests {
         );
         assert_eq!(icon_path("c", &files).unwrap(), "/usr/share/pixmaps/c.png");
         assert!(icon_path("d", &files).is_none());
+    }
+
+    #[test]
+    fn theme_icons() {
+        let candidates: Vec<String> = [
+            "breeze-icons usr/share/icons/breeze/apps/48/accessories-calculator.svg",
+            "breeze-icons usr/share/icons/breeze/apps/16/accessories-calculator.svg",
+            "adwaita-icon-theme usr/share/icons/Adwaita/symbolic/apps/accessories-calculator-symbolic.svg",
+            "oxygen-icons usr/share/icons/oxygen/base/256x256/apps/accessories-calculator.png",
+            "hicolor-x usr/share/icons/hicolor/48x48/apps/accessories-calculator-old.png",
+        ]
+        .map(String::from)
+        .to_vec();
+        let in_closure = vec!["breeze-icons".to_string()];
+        assert_eq!(
+            theme_icon("accessories-calculator", &candidates, &in_closure).unwrap(),
+            (
+                "breeze-icons".into(),
+                "/usr/share/icons/breeze/apps/48/accessories-calculator.svg".into()
+            )
+        );
+        assert_eq!(
+            theme_icon("accessories-calculator", &candidates, &[])
+                .unwrap()
+                .0,
+            "breeze-icons"
+        );
+        assert!(theme_icon("nothing", &candidates, &[]).is_none());
     }
 
     #[test]

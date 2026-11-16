@@ -504,7 +504,9 @@ xapp create --arch gnome-calculator
    (`XEEONOS_ARCH_SNAPSHOT` di `/usr/lib/os-release`, oppure
    `--snapshot`): descrizione, versione, dipendenze, file;
 2. dalla voce di menu (`.desktop`) prende nome, nomi tradotti, comando,
-   icona, categorie, tipi di file e classe della finestra; l'id è il nome
+   icona (se il pacchetto non ce l'ha, la prende dal tema di icone dello
+   snapshot che la contiene e aggiunge quel pacchetto), categorie, tipi di
+   file e classe della finestra; l'id è il nome
    del `.desktop` se è già in stile reverse-DNS, altrimenti
    `org.xeeonos.arch.<pacchetto>` (`--id` per sceglierlo);
 3. **propone i permessi**, uno per domanda, con il motivo: guarda le

@@ -7,13 +7,16 @@
 #   /work/closure.txt   every package installing it brings (one per line)
 #   /work/files.txt     the files of the package
 #   /work/pkgroot/      its menu entries, icons and metadata (extracted)
+#   /work/icons.txt     for a menu icon the package does not have (a theme
+#                       icon, like kcalc's accessories-calculator): the
+#                       packages of the snapshot that have it, "package path"
 #
 # Usage: create-arch.sh <snapshot YYYY/MM/DD> <package>
 # Environment: XAPP_CHOWN (uid:gid to give the results to).
 set -euo pipefail
 snapshot=${1:?snapshot missing}
 pkg=${2:?package missing}
-rm -rf /work/pkgroot /work/pkg /work/info.txt /work/closure.txt /work/files.txt
+rm -rf /work/pkgroot /work/pkg /work/info.txt /work/closure.txt /work/files.txt /work/icons.txt
 mkdir -p /work/pkgroot /work/pkg
 
 pacman-key --init >/dev/null 2>&1
@@ -50,6 +53,21 @@ if [[ -s /work/wanted.txt ]]; then
     bsdtar -xf "$file" -C /work/pkgroot -T /work/wanted.txt
 fi
 rm -rf /work/pkg
+# Menu icons named after a theme icon: who has them (the files database).
+: > /work/icons.txt
+mapfile -t icons < <(cat /work/pkgroot/usr/share/applications/*.desktop 2>/dev/null |
+    sed -n 's/^Icon=//p' | grep -v '^/' | sort -u)
+missing=()
+for i in "${icons[@]}"; do
+    grep -qE "/$i\.(png|svg)$" /work/files.txt || missing+=("$i")
+done
+if [[ ${#missing[@]} -gt 0 ]]; then
+    p -Fy >/dev/null
+    for i in "${missing[@]}"; do
+        p -Fx --machinereadable "^usr/share/(icons/[^/]+/.*|pixmaps)/$i\.(png|svg)$" 2>/dev/null |
+            tr '\0' '\t' | awk -F'\t' '{print $2 " " $4}' >> /work/icons.txt || true
+    done
+fi
 if [[ -n ${XAPP_CHOWN:-} ]]; then
     chown -R "$XAPP_CHOWN" /work
 fi
