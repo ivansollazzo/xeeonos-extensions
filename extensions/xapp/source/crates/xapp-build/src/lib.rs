@@ -46,6 +46,8 @@ use xapp_format::manifest::Digest;
 use xapp_format::{FORMAT, Gpu, HOST_CONTRACT, Manifest, Permission};
 use xapp_trust::keys::{self, Secret};
 
+pub mod create;
+
 const ROOT_SCRIPT: &str = include_str!("build-root.sh");
 
 /// Options of `xapp build`.
@@ -74,8 +76,7 @@ struct ContainerBuild<'a> {
 fn image_in_container(b: &ContainerBuild, app_id: &str) -> Result<()> {
     fs::write(b.work.join("build-root.sh"), ROOT_SCRIPT)?;
     let engine = engine()?;
-    let image_name = std::env::var("XAPP_BUILD_IMAGE")
-        .unwrap_or_else(|_| "docker.io/library/archlinux:base".into());
+    let image_name = container_image();
     let mut cmd = Command::new(&engine);
     cmd.args(["run", "--rm", "--privileged"])
         .arg("--volume")
@@ -230,8 +231,13 @@ fn signing_key(opt: &Option<PathBuf>) -> Result<Secret> {
     Ok(k)
 }
 
+/// The Arch Linux container image: $XAPP_BUILD_IMAGE, else archlinux:base.
+pub(crate) fn container_image() -> String {
+    std::env::var("XAPP_BUILD_IMAGE").unwrap_or_else(|_| "docker.io/library/archlinux:base".into())
+}
+
 /// The container program: $XAPP_CONTAINER, else podman, else docker.
-fn engine() -> Result<String> {
+pub(crate) fn engine() -> Result<String> {
     if let Ok(e) = std::env::var("XAPP_CONTAINER") {
         return Ok(e);
     }
