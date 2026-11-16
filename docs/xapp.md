@@ -470,6 +470,11 @@ Una **ricetta** è una cartella con `recipe.json`:
 - `script`: un passo della ricetta, eseguito con `ROOT=<radice>` dopo
   l'installazione dei pacchetti (file aggiuntivi, impostazioni).
 - `remove`: percorsi da togliere dalla radice.
+- `sources`: archivi pubblicati dagli autori dell'app (binari ufficiali),
+  `[{"url": "https://...", "sha256": "...", "to": "/opt/<nome>"}]`:
+  scaricati, controllati con lo SHA-256 (un file diverso ferma la build) e
+  scompattati in `to` (senza la cartella unica che li contiene), dopo i
+  pacchetti e prima di `script`. Solo `https://` e solo dentro `/opt`.
 - `user_namespaces`: di solito si omette, `xapp build` lo capisce
   dall'immagine (sezione 8).
 
@@ -494,11 +499,14 @@ già pronta, senza container.
 ### Il wizard (xapp create)
 
 Scrivere una ricetta a mano non serve: `xapp create` la propone partendo
-da un pacchetto Arch.
+da un pacchetto Arch o da un archivio pubblicato dagli autori dell'app.
 
 ```
 xapp create --arch gnome-calculator
+xapp create --url "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=it"
 ```
+
+Con `--arch`:
 
 1. in un container Arch guarda il pacchetto **nello snapshot del sistema**
    (`XEEONOS_ARCH_SNAPSHOT` di `/usr/lib/os-release`, oppure
@@ -520,10 +528,32 @@ xapp create --arch gnome-calculator
 5. chiede se costruire subito l'app e metterla in `~/Applications`
    (`--no-build` per fermarsi alla ricetta).
 
+Con `--url` (solo `https://`):
+
+1. nel container scarica l'archivio (tar.xz, tar.gz, tar.bz2, zip...),
+   segue i redirect e ne calcola lo SHA-256: nella ricetta vanno
+   l'indirizzo **finale** (es. quello con il numero di versione al posto di
+   "latest") e lo SHA-256, così la build prende sempre lo stesso file;
+2. trova i programmi (ELF con interprete) e con `readelf` le librerie che
+   chiedono; quelle che l'archivio non ha le cerca nel database dei file
+   dello snapshot (`pacman -F`) e mette i loro pacchetti nella ricetta. Le
+   librerie nominate dentro i programmi e caricate solo durante l'uso
+   (`dlopen`: audio, video, accelerazione, stampa) le propone con una
+   domanda a parte. Quelle che nessun pacchetto ha vengono mostrate
+   (l'app potrebbe non partire);
+3. nome e versione vengono dal nome del file (`firefox-147.0.tar.xz`),
+   l'id dall'indirizzo scritto (`download.mozilla.org` → `org.mozilla.firefox`;
+   `github.com/<autore>` → `io.github.<autore>.<nome>`; `--id` per
+   sceglierlo); il programma da avviare è quello con il nome dell'app (o
+   quello del `.desktop` dell'archivio, se c'è; `--exec <percorso>`
+   altrimenti); l'icona è l'immagine più grande in una cartella o file
+   "icon" (`--icon <percorso>` altrimenti);
+4. l'archivio finisce in `/opt/<nome>` dell'immagine (`sources`); i
+   permessi sono proposti come per `--arch`, dalle librerie trovate.
+
 `--yes` accetta tutte le proposte (per la CI). `user_namespaces` non
-compare: lo decide `xapp build` (sezione 8). Prossime sorgenti: binari
-scaricati (`--url`, es. Firefox dal sito di Mozilla) e AUR (`--aur`, con
-il PKGBUILD mostrato prima di costruire).
+compare: lo decide `xapp build` (sezione 8). Prossima sorgente: AUR
+(`--aur`, con il PKGBUILD mostrato prima di costruire).
 
 ## 15. Il comando xapp
 
@@ -531,8 +561,9 @@ il PKGBUILD mostrato prima di costruire).
 xapp run [--yes] <file|app> [argomenti]   avvia (anche quello che fa il doppio clic)
 xapp install [--yes] <file>               copia in ~/Applications
 xapp build <ricetta> [--key <file>] [--output <file>] [--no-install] [--root <dir>]
-xapp create --arch <pacchetto> [--snapshot AAAA/MM/GG] [--id <id>] [--output <dir>] [--no-build]
-                                          wizard: ricetta da un pacchetto Arch, poi build
+xapp create --arch <pacchetto> | --url <https://...> [--exec <programma>] [--icon <immagine>]
+            [--snapshot AAAA/MM/GG] [--id <id>] [--output <dir>] [--no-build]
+                                          wizard: ricetta da un pacchetto Arch o da un archivio, poi build
 xapp list                                 le applicazioni di ~/Applications
 xapp info <app|file>                      cos'è, autore, snapshot, permessi
 xapp verify <file>                        firma e integrità, senza aprire
@@ -560,7 +591,7 @@ dentro xctl, e non richiede sudo.
 | `xapp-permissions` | catalogo dei permessi e scelte dell'utente |
 | `xapp-sandbox` | montaggio, seccomp, filtro D-Bus, GPU, riga di comando di bubblewrap, avvio nello scope |
 | `xapp-desktop` | registro, voci di menu, tipo di file, `xapp sync` |
-| `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`) |
+| `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`, `create-url.sh`) |
 | `xapp` | il programma: legge la riga di comando |
 
 Dipendenze esterne, poche e note: `serde_json` (JSON), `sha2` (SHA-256),

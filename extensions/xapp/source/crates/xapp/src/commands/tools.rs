@@ -47,13 +47,14 @@ pub fn build(args: &[String]) -> Result<u8> {
     Ok(0)
 }
 
-/// `xapp create --arch <package> [--snapshot YYYY/MM/DD] [--id <app id>]
-/// [--output <dir>] [--work <dir>] [--no-build]`: the wizard. It looks at
+/// `xapp create --arch <package> | --url <https://...> [--exec <program>]
+/// [--icon <image>] [--snapshot YYYY/MM/DD] [--id <app id>] [--output <dir>]
+/// [--work <dir>] [--no-build]`: the wizard. It looks at
 /// the package, proposes a recipe and its permissions, writes the recipe,
 /// then (if the user wants) builds and installs the application.
 pub fn create(args: &[String]) -> Result<u8> {
-    let usage = "usage: xapp create --arch <package> [--snapshot YYYY/MM/DD] [--id <app id>] \
-                 [--output <dir>] [--no-build]";
+    let usage = "usage: xapp create --arch <package> | --url <https://...> [--exec <program>] \
+                 [--icon <image>] [--snapshot YYYY/MM/DD] [--id <app id>] [--output <dir>] [--no-build]";
     let mut source = None;
     let mut o = xapp_build::create::Options {
         source: xapp_build::create::Source::Arch(String::new()),
@@ -61,6 +62,8 @@ pub fn create(args: &[String]) -> Result<u8> {
         app_id: None,
         output: None,
         work: None,
+        exec: None,
+        icon: None,
     };
     let mut build = true;
     let mut it = args.iter();
@@ -72,6 +75,9 @@ pub fn create(args: &[String]) -> Result<u8> {
         };
         match a.as_str() {
             "--arch" => source = Some(xapp_build::create::Source::Arch(value()?)),
+            "--url" => source = Some(xapp_build::create::Source::Url(value()?)),
+            "--exec" => o.exec = Some(value()?),
+            "--icon" => o.icon = Some(value()?),
             "--snapshot" => o.snapshot = Some(value()?),
             "--id" => o.app_id = Some(value()?),
             "--output" | "-o" => o.output = Some(PathBuf::from(value()?)),
