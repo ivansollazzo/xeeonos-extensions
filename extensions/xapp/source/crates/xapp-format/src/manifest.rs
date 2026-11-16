@@ -54,6 +54,10 @@ pub struct Manifest {
     pub snapshot: String,
     pub host_contract: u64,
     pub gpu: Gpu,
+    /// The application makes its own sandbox inside this one with user
+    /// namespaces (Chromium, Electron, WebKitGTK, Qt WebEngine). Decided by
+    /// `xapp build` from the image's contents, never by the user.
+    pub user_namespaces: bool,
     /// Versions of the C libraries inside the image (glibc, libstdc++ of
     /// gcc-libs): the system's must be at least as new to lend its graphics
     /// drivers.
@@ -167,6 +171,10 @@ impl Manifest {
                 .and_then(Value::as_u64)
                 .unwrap_or(1),
             gpu,
+            user_namespaces: obj
+                .get("user_namespaces")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             glibc: text(obj, "glibc"),
             libstdcxx: text(obj, "libstdcxx"),
             permissions,
@@ -247,6 +255,7 @@ impl Manifest {
             "snapshot": self.snapshot,
             "host_contract": self.host_contract,
             "gpu": self.gpu.as_str(),
+            "user_namespaces": self.user_namespaces,
             "glibc": self.glibc,
             "libstdcxx": self.libstdcxx,
             "permissions": permissions,
@@ -301,6 +310,7 @@ pub(crate) mod tests {
             snapshot: "2026-11-13".into(),
             host_contract: 1,
             gpu: Gpu::Host,
+            user_namespaces: true,
             glibc: "2.42".into(),
             libstdcxx: "15.2.1".into(),
             permissions: vec![Permission {

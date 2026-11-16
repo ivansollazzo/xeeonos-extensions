@@ -10,10 +10,14 @@
 //! C library falls back to clone, whose flags the filter can see. Programs
 //! of another architecture (x32, i386) are stopped.
 //!
-//! With the permission `nested_sandbox` (browsers, Electron apps: they
-//! isolate their own pages in user namespaces) unshare and clone with
-//! CLONE_NEWUSER are allowed; mounting, setns and the rest stay refused,
-//! and the new namespaces inherit this filter.
+//! For an application that makes its own sandbox (manifest
+//! `user_namespaces`: Chromium, Electron, WebKitGTK, Qt WebEngine, and the
+//! bubblewrap of GTK's image loader glycin) unshare, clone with
+//! CLONE_NEWUSER and mounting are allowed. Mounting needs CAP_SYS_ADMIN,
+//! which the application has only in the namespaces it makes itself (the
+//! sandbox drops every capability): it can change only its own sandbox,
+//! never this one. setns and the rest stay refused, and the new namespaces
+//! inherit this filter.
 
 /// One instruction of a classic BPF program (struct sock_filter).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,6 +57,22 @@ const TIOCLINUX: u32 = 0x541c;
 const CLONE_NEWUSER: u32 = 0x1000_0000;
 
 const SYS_UNSHARE: u32 = 272;
+
+/// Allowed to an application that makes its own sandbox: new namespaces
+/// and mounting inside them (what bubblewrap does).
+const NESTED: &[u32] = &[
+    SYS_UNSHARE,
+    155, // pivot_root
+    165, // mount
+    166, // umount2
+    428, // open_tree
+    429, // move_mount
+    430, // fsopen
+    431, // fsconfig
+    432, // fsmount
+    433, // fspick
+    442, // mount_setattr
+];
 
 /// x86-64 system call numbers refused with EPERM.
 pub const DENIED: &[(u32, &str)] = &[
@@ -137,7 +157,7 @@ pub fn program(nested: bool) -> Vec<Insn> {
         ret(RET_ERRNO | ENOSYS),
     ];
     for &(nr, _) in DENIED {
-        if nested && nr == SYS_UNSHARE {
+        if nested && NESTED.contains(&nr) {
             continue;
         }
         p.push(jmp(JEQ, nr, 0, 1));
@@ -249,8 +269,14 @@ mod tests {
         assert_eq!(eval_with(true, SYS_CLONE, A, newuser), RET_ALLOW);
         assert_eq!(eval_with(true, SYS_UNSHARE, A, [0; 6]), RET_ALLOW);
         assert_eq!(eval_with(false, SYS_UNSHARE, A, [0; 6]), RET_ERRNO | EPERM);
-        // Still refused: mounting, setns, ptrace, clone3 (ENOSYS), i386.
-        for nr in [165, 308, 101, 155] {
+        // Mounting (in its own namespaces) too.
+        for &nr in NESTED {
+            assert_eq!(eval_with(true, nr, A, [0; 6]), RET_ALLOW, "{nr}");
+            assert_eq!(eval_with(false, nr, A, [0; 6]), RET_ERRNO | EPERM, "{nr}");
+        }
+        // Still refused: setns, ptrace, modules, keyrings, BPF, clone3
+        // (ENOSYS), i386.
+        for nr in [308, 101, 175, 250, 321] {
             assert_eq!(eval_with(true, nr, A, [0; 6]), RET_ERRNO | EPERM, "{nr}");
         }
         assert_eq!(eval_with(true, SYS_CLONE3, A, [0; 6]), RET_ERRNO | ENOSYS);

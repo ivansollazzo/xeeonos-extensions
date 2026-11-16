@@ -207,8 +207,8 @@ pub fn run(l: &Launch) -> Result<i32> {
     // which it cannot leave, is what tells the desktop portal who it is
     // once it can change its root.
     let manager = user_manager();
-    let nested = given("nested_sandbox") && manager;
-    if given("nested_sandbox") && !manager {
+    let nested = m.user_namespaces && manager;
+    if m.user_namespaces && !manager {
         eprintln!(
             "xapp: {} cannot make its own sandbox without the user's service manager",
             m.app_id

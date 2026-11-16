@@ -115,6 +115,7 @@ successive di xapp aggiungono funzioni senza cambiare il formato.
 | `snapshot` | snapshot di Arch dell'immagine (`2026-11-13`) |
 | `host_contract` | versione del [contratto con il sistema](#9-il-contratto-con-il-sistema) che serve (`1`) |
 | `gpu` | `host` (driver del sistema, predefinito) o `bundled` (driver propri) |
+| `user_namespaces` | l'app fa una sandbox propria dentro la nostra (Chromium, Electron, WebKitGTK, Qt WebEngine): deciso da `xapp build`, sezione 8 |
 | `glibc`, `libstdcxx` | versioni di glibc e gcc-libs dell'immagine |
 | `permissions` | i permessi che l'app **può** chiedere, ognuno con il motivo: `[{"id": "camera", "reason": "Per le videochiamate"}]` |
 | `mime_types` | tipi di file che apre |
@@ -250,11 +251,21 @@ Altre protezioni:
   unshare, setns, clone con `CLONE_NEWUSER`, cambio dell'ora, swap, reboot,
   `TIOCSTI` e altro. clone3 risponde "non supportato", così glibc ripiega su
   clone, di cui il filtro vede i flag. I programmi i386/x32 vengono fermati.
-  Con il permesso `nested_sandbox` (browser, app Electron, che isolano le
-  proprie pagine in namespace utente) unshare e clone con `CLONE_NEWUSER`
-  sono permessi; mount, setns e il resto restano rifiutati, e i namespace
-  nuovi ereditano il filtro. Solo dentro lo scope systemd (senza il
-  servizio utente di systemd il permesso non viene dato).
+- **Sandbox propria dentro la nostra** (`user_namespaces` nel manifest):
+  Chromium, Electron, CEF, WebKitGTK e Qt WebEngine isolano le proprie
+  pagine con i namespace utente, e senza non partono. Non è un permesso e
+  l'utente non sceglie niente: lo decide `xapp build` guardando cosa c'è
+  nell'immagine (`chrome-sandbox`, `v8_context_snapshot.bin`, `libcef.so`,
+  `QtWebEngineProcess`, `WebKitWebProcess`), e la ricetta può forzarlo con
+  `"user_namespaces": true|false`. Per queste app il filtro permette
+  unshare, clone con `CLONE_NEWUSER` e i mount: i mount richiedono
+  `CAP_SYS_ADMIN`, che l'app ha solo nei namespace che crea lei (la
+  sandbox toglie ogni capability), quindi può cambiare solo la sua
+  sandbox, mai la nostra. setns e il resto restano rifiutati, e i
+  namespace nuovi ereditano il filtro. Solo dentro lo scope systemd. Le
+  altre app (Firefox compreso) non ne hanno bisogno: glycin, il caricatore
+  di immagini di GTK, se non ha i namespace carica le immagini senza la
+  sua sandbox, sempre dentro la nostra.
 - `--cap-drop ALL`, `--die-with-parent`.
 - **Bus di sessione filtrato** con `xdg-dbus-proxy`, politica "nega tutto".
   Passano solo il proprio nome, il portal del desktop per le parti che
@@ -308,7 +319,7 @@ aggiornata in `portal/source`).
   Network=shared|none
   ```
 
-  Se c'è lo scope, comanda lo scope: un'app con `nested_sandbox` può
+  Se c'è lo scope, comanda lo scope: un'app con `user_namespaces` può
   cambiare radice (chroot) e far sparire o falsificare `/.xapp-info`, non
   lo scope. Per questo il tipo "xapp" viene controllato **per primo**,
   prima di Flatpak.
@@ -358,7 +369,6 @@ ottenere.
 | `network` | rete e internet | sì |
 | `gpu` | accelerazione grafica | sì |
 | `notifications` | notifiche | sì |
-| `nested_sandbox` | una sandbox propria dentro questa (namespace utente: browser, app Electron) | sì |
 | `documents`, `downloads`, `pictures`, `music`, `videos`, `desktop` | la cartella utente corrispondente (nomi tradotti da `~/.config/user-dirs.dirs`) | chiesto |
 | `audio` | suono e microfono (in v1 insieme: il socket PipeWire non li separa bene) | chiesto |
 | `camera` | fotocamera | chiesto |
@@ -460,6 +470,8 @@ Una **ricetta** è una cartella con `recipe.json`:
 - `script`: un passo della ricetta, eseguito con `ROOT=<radice>` dopo
   l'installazione dei pacchetti (file aggiuntivi, impostazioni).
 - `remove`: percorsi da togliere dalla radice.
+- `user_namespaces`: di solito si omette, `xapp build` lo capisce
+  dall'immagine (sezione 8).
 
 `xapp build <ricetta>`:
 
@@ -529,7 +541,7 @@ e per `xapp build` `podman` o `docker`.
 - Unitari (`cargo test` in `extensions/xapp/build.sh`): file
   `.xapp` scritto e riletto, un byte cambiato rifiutato, manifest,
   firma, filtro seccomp eseguito da un piccolo interprete BPF (con e senza
-  `nested_sandbox`), regole del bus, sandbox del proxy, `/.xapp-info`,
+  sandbox propria), riconoscimento di Chromium, Electron e WebKitGTK, regole del bus, sandbox del proxy, `/.xapp-info`,
   prestito dei file, mimeapps.list, versioni e date.
 - In VM (`extensions/xapp/test`, eseguito da `tools/boot-check.sh` sulla
   versione di XeeonOS pubblicata): un'app di prova costruita nella VM con
@@ -537,7 +549,9 @@ e per `xapp build` `podman` o `docker`.
   `~/Applications` durante una sessione GNOME. Si verificano: il menu, il
   tipo di file anche senza estensione, il doppio clic; nella sandbox:
   immagine propria, sistema e home invisibili, cartella permessa sì e negata
-  no, niente rete, niente namespace utente (e con `nested_sandbox` sì),
+  no, niente rete, niente namespace utente né `bwrap` dentro la sandbox;
+  una seconda app con un file di Chromium, a cui `xapp build` dà la sandbox
+  propria senza chiedere niente, dove namespace utente e `bwrap` funzionano;
   `/usr` in sola lettura, Wayland, driver grafici del sistema prestati, bus
   filtrato (portal sì, GNOME Shell no), file aperto prestato; il portal
   dell'estensione al posto di quello del sistema, che riconosce l'app come

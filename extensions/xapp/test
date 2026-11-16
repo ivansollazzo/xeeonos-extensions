@@ -42,7 +42,7 @@ echo "session: $session_env" | tr '\n' ' '; echo
 # The application: a tree with bash, a few commands and their libraries.
 work=$home/xapp-test
 as_test mkdir -p "$work/root/usr/bin" "$work/root/usr/lib" "$work/recipe" "$work/other"
-cmds=(bash cat grep ls touch unshare dbus-send)
+cmds=(bash cat grep ls touch unshare dbus-send bwrap)
 for c in "${cmds[@]}"; do
     p=$(command -v "$c") || fail "no $c on the system"
     cp "$p" "$work/root/usr/bin/"
@@ -70,6 +70,9 @@ out "PID1-$(cat /proc/1/comm)"
 test "$(grep -c . /proc/net/dev)" -le 3 && out NET-off || out NET-on
 # A new user namespace (the image has no `true`: bash -c : instead).
 unshare -U bash -c : 2>/dev/null && out USERNS-allowed || out USERNS-blocked
+# A sandbox of its own, as GTK's image loader (glycin) or WebKitGTK make it.
+bwrap --unshare-all --ro-bind /usr /usr --symlink usr/lib /lib64 --symlink usr/lib /lib \
+    --symlink usr/bin /bin --dev /dev bash -c : 2>/dev/null && out BWRAP-ok || out BWRAP-failed
 touch /usr/x 2>/dev/null && out USR-writable || out USR-readonly
 for f in "$@"; do test -r "$f" && out "ARG-readable-$f"; done
 if test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"; then out WAYLAND-ok; else
@@ -116,13 +119,20 @@ cat > "$work/recipe/recipe.json" <<'JSON'
     {"id": "gpu", "reason": "To check the graphics drivers of the system"},
     {"id": "notifications", "reason": "To check the filtered session bus"},
     {"id": "documents", "reason": "To check a folder that was given"},
-    {"id": "pictures", "reason": "To check a folder that was not given"},
-    {"id": "nested_sandbox", "reason": "To check user namespaces, refused and allowed"}
+    {"id": "pictures", "reason": "To check a folder that was not given"}
   ],
   "categories": ["Utility"],
   "icon": "icon.svg"
 }
 JSON
+# The same with a file of Chromium's: xapp build gives it its own sandbox
+# (user namespaces), with no permission to ask.
+cp -a "$work/root" "$work/root-nested"
+mkdir -p "$work/root-nested/usr/lib/chromium" "$work/nested"
+touch "$work/root-nested/usr/lib/chromium/chrome-sandbox"
+cp "$work/recipe/icon.svg" "$work/nested/"
+sed 's/org.xeeonos.Test"/org.xeeonos.Nested"/; s/"name": "Test"/"name": "Nested"/' \
+    "$work/recipe/recipe.json" > "$work/nested/recipe.json"
 # Another author (same id: a fake update) and an unknown one.
 sed 's/"version": "1.0"/"version": "9.0"/' "$work/recipe/recipe.json" > "$work/other/recipe.json"
 chown -R test:test "$work"
@@ -133,6 +143,9 @@ as_test xapp build "$work/other" --root "$work/root" --key "$work/other.key" \
 sed -i 's/org.xeeonos.Test"/org.xeeonos.Unknown"/' "$work/other/recipe.json"
 as_test xapp build "$work/other" --root "$work/root" --key "$work/other.key" \
     --output "$work/unknown.xapp" --work "$work/build-unknown" --no-install
+out=$(as_test xapp build "$work/nested" --root "$work/root-nested" --key "$work/author.key" \
+    --output "$work/Nested.xapp" --work "$work/build-nested" --no-install)
+expect "^Chromium or Electron inside .*its own sandbox is allowed" "$out"
 out=$(as_test xapp verify "$work/Test.xapp" 2>&1)
 expect "intact" "$out"
 
@@ -164,21 +177,26 @@ as_test sh -c "echo secret > $home/secret.txt; echo doc > $home/Documents/doc.tx
 as_test xapp permissions org.xeeonos.Test documents yes
 as_test xapp permissions org.xeeonos.Test pictures no
 as_test xapp permissions org.xeeonos.Test network no
-as_test xapp permissions org.xeeonos.Test nested_sandbox no
 as_test gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:minimize,maximize,close'
 ls -la "/run/user/$uid" 2>&1 | sed "s,^,RUNTIME: ," || true  # root cannot look into the FUSE mounts there
 out=$(as_test env XAPP_DEBUG=1 xapp run org.xeeonos.Test /tmp/note.txt 2>&1)
 printf '%s\n' "$out" | sed 's,^,RUN: ,'
 for line in "IN-HOME-$home" IN-ROOTFS-app IN-HOST-hidden IN-SECRET-hidden IN-DOCS-visible \
-    IN-PICS-hidden IN-PID1-bwrap IN-NET-off IN-USERNS-blocked IN-USR-readonly \
+    IN-PICS-hidden IN-PID1-bwrap IN-NET-off IN-USERNS-blocked IN-BWRAP-failed IN-USR-readonly \
     "IN-ARG-readable-/run/xapp/docs/0/note.txt" IN-WAYLAND-ok IN-GPU-lent IN-DRI-ok \
     IN-BUS-portal IN-BUS-shell-hidden IN-INFO-ok IN-DOCPORTAL-sandboxed IN-DOCDIR-ok \
     IN-GTK-portal IN-BUTTONS-all; do
     expect "^$line\$" "$out"
 done
-# Its own sandbox inside (browsers, Electron apps): user namespaces allowed.
-as_test xapp permissions org.xeeonos.Test nested_sandbox yes
-expect "^IN-USERNS-allowed\$" "$(as_test xapp run org.xeeonos.Test 2>&1)"
+# Its own sandbox inside, decided by the package: user namespaces and
+# bubblewrap work for the application with Chromium, not for the other.
+as_test xapp info org.xeeonos.Test | grep -q '^Sandbox:' && fail "Test makes its own sandbox"
+as_test cp "$work/Nested.xapp" $home/Applications/Nested.xapp
+for _ in $(seq 60); do test -e $home/.local/share/applications/org.xeeonos.Nested.desktop && break; sleep 1; done
+expect "^Sandbox: +makes its own" "$(as_test xapp info org.xeeonos.Nested)"
+out=$(as_test xapp run org.xeeonos.Nested 2>&1)
+expect "^IN-USERNS-allowed\$" "$out"
+expect "^IN-BWRAP-ok\$" "$out"
 expect "^Test +org.xeeonos.Test +1.0 +trusted author" "$(as_test xapp list)"
 expect "^Author: .*\(trusted\)" "$(as_test xapp info org.xeeonos.Test)"
 
