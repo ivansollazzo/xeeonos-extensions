@@ -44,9 +44,11 @@ p -Sp --print-format '%n' "$pkg" > /work/closure.txt
 p -Swdd --noconfirm --cachedir /work/pkg "$pkg" >/dev/null
 file=$(find /work/pkg -name "$pkg-*.pkg.tar.*" ! -name '*.sig' | head -n1)
 bsdtar -tf "$file" | grep -v '/$' | grep -v '^\.' > /work/files.txt
-bsdtar -xf "$file" -C /work/pkgroot \
-    --include 'usr/share/applications/*' --include 'usr/share/icons/*' \
-    --include 'usr/share/pixmaps/*' --include 'usr/share/metainfo/*'
+# Only what the package has (bsdtar fails on a pattern that matches nothing).
+grep -E '^usr/share/(applications|icons|pixmaps|metainfo)/' /work/files.txt > /work/wanted.txt || true
+if [[ -s /work/wanted.txt ]]; then
+    bsdtar -xf "$file" -C /work/pkgroot -T /work/wanted.txt
+fi
 rm -rf /work/pkg
 if [[ -n ${XAPP_CHOWN:-} ]]; then
     chown -R "$XAPP_CHOWN" /work
