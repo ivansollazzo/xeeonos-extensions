@@ -139,6 +139,9 @@ pub fn info(args: &[String]) -> Result<u8> {
         Err(e) => format!("REFUSED: {e}"),
     };
     println!("Author:      {} ({author})", keys::fingerprint(&m.signer));
+    if m.user_namespaces {
+        println!("Sandbox:     makes its own inside (user namespaces)");
+    }
     let age = xapp_core::date::parse(&m.snapshot).map(|d| xapp_core::date::today() - d);
     let old = match age {
         Some(days) if days > 365 => format!(

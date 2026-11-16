@@ -22,6 +22,11 @@
 //! }
 //! ```
 //!
+//! Whether the application makes its own sandbox with user namespaces
+//! (manifest `user_namespaces`) is found in the image: Chromium, Electron,
+//! CEF, WebKitGTK and Qt WebEngine do. A recipe can still say
+//! `"user_namespaces": true|false`.
+//!
 //! `version` may be left out: it is then the version of the first package.
 //! The packages are installed with pacman, from the Arch Linux Archive
 //! snapshot of the recipe, in an Arch Linux container (podman or docker);
@@ -124,6 +129,53 @@ fn image_from_root(root: &Path, recipe_dir: &Path, icon: &str, out: &Path) -> Re
         .map_err(|e| err(format!("cannot read the icon {}: {e}", src.display())))?;
     let _ = fs::remove_file(out.join("info"));
     Ok(())
+}
+
+/// Files that tell that the application makes its own sandbox with user
+/// namespaces, and would not start without them: (file name, what it is).
+const OWN_SANDBOX: &[(&str, &str)] = &[
+    ("chrome-sandbox", "Chromium or Electron"),
+    ("v8_context_snapshot.bin", "Chromium or Electron"),
+    ("libcef.so", "Chromium Embedded Framework"),
+    ("QtWebEngineProcess", "Qt WebEngine"),
+    ("WebKitWebProcess", "WebKitGTK"),
+];
+
+/// What makes its own sandbox among these files (paths in the image).
+pub fn own_sandbox<'a>(
+    files: impl IntoIterator<Item = &'a str>,
+) -> Option<(&'a str, &'static str)> {
+    files.into_iter().find_map(|f| {
+        let name = f.rsplit('/').next().unwrap_or(f);
+        OWN_SANDBOX
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, what)| (f, *what))
+    })
+}
+
+/// Every file under a directory, as paths relative to it.
+fn files_under(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut dirs = vec![root.to_path_buf()];
+    while let Some(d) = dirs.pop() {
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            match e.file_type() {
+                Ok(t) if t.is_dir() => dirs.push(p),
+                Ok(_) => {
+                    if let Ok(rel) = p.strip_prefix(root) {
+                        out.push(rel.to_string_lossy().into_owned());
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    out
 }
 
 fn text(v: &Value, k: &str) -> String {
@@ -263,6 +315,29 @@ pub fn build(o: &Options) -> Result<PathBuf> {
         }
     }
     let image = out.join("image.erofs");
+    let files = match &o.root {
+        Some(root) => files_under(root),
+        None => fs::read_to_string(out.join("files.txt"))
+            .unwrap_or_default()
+            .lines()
+            .map(String::from)
+            .collect(),
+    };
+    let found = own_sandbox(files.iter().map(String::as_str));
+    let user_namespaces = match r.get("user_namespaces").and_then(Value::as_bool) {
+        Some(v) => v,
+        None => found.is_some(),
+    };
+    if let Some((file, what)) = found {
+        println!(
+            "{what} inside ({file}): its own sandbox {}",
+            if user_namespaces {
+                "is allowed"
+            } else {
+                "is not allowed (recipe)"
+            }
+        );
+    }
     let info = read_kv(&out.join("info"));
     let info = |k: &str| {
         info.iter()
@@ -316,6 +391,7 @@ pub fn build(o: &Options) -> Result<PathBuf> {
         } else {
             Gpu::Host
         },
+        user_namespaces,
         glibc: info("glibc"),
         libstdcxx: info("libstdcxx"),
         permissions,
@@ -390,5 +466,21 @@ mod tests {
         assert_eq!(file_name("Text Editor"), "Text Editor");
         assert_eq!(file_name("a/b"), "a-b");
         assert_eq!(file_name(".."), "application");
+    }
+
+    #[test]
+    fn finds_own_sandboxes() {
+        let files = ["usr/bin/bash", "usr/lib/electron39/chrome-sandbox"];
+        assert_eq!(
+            own_sandbox(files),
+            Some(("usr/lib/electron39/chrome-sandbox", "Chromium or Electron"))
+        );
+        assert_eq!(
+            own_sandbox(["usr/lib/firefox/firefox", "usr/bin/gimp"]),
+            None
+        );
+        assert!(own_sandbox(["usr/lib/webkitgtk-6.0/WebKitWebProcess"]).is_some());
+        // A name, not a part of one.
+        assert_eq!(own_sandbox(["usr/share/doc/chrome-sandbox.txt"]), None);
     }
 }

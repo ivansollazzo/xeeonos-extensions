@@ -101,6 +101,9 @@ while IFS= read -r path; do
 done <<< "${XAPP_REMOVE:-}"
 mkdir -p ./xapp
 cp "$out/packages.txt" ./xapp/packages.txt
+# Every file of the image, for xapp build (it looks for programs that make
+# their own sandbox: Chromium, Electron, WebKitGTK, Qt WebEngine).
+find . -mindepth 1 ! -type d -printf '%P\n' > "$out/files.txt"
 cd /work
 
 # Read-only image, compressed (lz4hc: small and fast to read), with fixed
