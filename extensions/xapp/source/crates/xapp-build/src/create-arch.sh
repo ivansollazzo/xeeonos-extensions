@@ -13,6 +13,7 @@
 #   /work/loads.txt     "library package": libraries its programs name and
 #                       load while running (dlopen: sound, video, ...) that
 #                       its dependencies do not bring (optional ones)
+#   /work/named.txt     the libraries its programs name (for loads.txt)
 #   /work/hints.txt     "permission what": what its programs name that a
 #                       permission gives (scan.sh)
 #   /work/multilib.txt  why it needs the multilib repository, if it does
@@ -27,7 +28,7 @@ snapshot=${1:?snapshot missing}
 pkg=${2:?package missing}
 local_file=${3:-}
 rm -rf /work/pkgroot /work/pkg /work/info.txt /work/closure.txt /work/files.txt /work/icons.txt \
-    /work/loads.txt /work/hints.txt /work/multilib.txt /work/gpu32.txt
+    /work/loads.txt /work/hints.txt /work/multilib.txt /work/gpu32.txt /work/named.txt
 mkdir -p /work/pkgroot /work/pkg
 . /work/scan.sh
 
@@ -93,6 +94,7 @@ scan_files /tmp/full /work/files.txt
 cp /tmp/hints /work/hints.txt
 sed 's|.*/||' /work/files.txt | sort -u > /tmp/own
 sort -u /tmp/named | comm -23 - /tmp/own > /tmp/named.sorted
+cp /tmp/named.sorted /work/named.txt
 owners_of usr/lib /tmp/named.sorted > /tmp/owners
 # The closure's packages that are in the snapshot (not one built from the
 # AUR), for pacman.
