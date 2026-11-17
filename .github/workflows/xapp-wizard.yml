@@ -102,7 +102,8 @@ jobs:
               --output "$OUT/steam-recipe" --no-build
           cat "$OUT/steam-recipe/recipe.json"
           jq -e '.multilib == true' "$OUT/steam-recipe/recipe.json"
-          jq -e '.packages | index("lib32-mesa") != null' "$OUT/steam-recipe/recipe.json"
+          # lib32-mesa comes with steam itself; the 32-bit Vulkan drivers not.
+          jq -e '.packages | index("lib32-vulkan-radeon") != null' "$OUT/steam-recipe/recipe.json"
 
       - name: --aur without reading the PKGBUILD is refused
         run: |
