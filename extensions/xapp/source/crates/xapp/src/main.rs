@@ -18,10 +18,12 @@ xapp: XeeonOS applications (.xapp)
   xapp install [--yes] <file>             copy an application into ~/Applications
   xapp build <recipe> [--key <file>] [--output <file>] [--no-install]
                                           make a .xapp from a recipe, then install it
-  xapp create --arch <package> | --url <https://...> [--exec <program>] [--icon <image>]
+  xapp create --arch <package> | --aur <package> | --url <https://...> | --dir <directory>
+              [--exec <program>] [--icon <image>] [--pkgbuild-ok] [--permission <id>[=<reason>]]...
               [--snapshot YYYY/MM/DD] [--id <app id>] [--output <dir>] [--no-build]
-                                          wizard: make a recipe from an Arch package or from
-                                          an archive of the authors, then build it
+                                          wizard: make a recipe from an Arch package, an AUR
+                                          package (its PKGBUILD shown first), an archive of
+                                          the authors or a directory, then build it
   xapp list                               the applications in ~/Applications
   xapp info <app|file>                    what an application is, its author and permissions
   xapp verify <file>                      check signature and integrity, without opening

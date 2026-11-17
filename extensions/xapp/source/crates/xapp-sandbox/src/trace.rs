@@ -6,7 +6,9 @@
 //!     and every name the application wanted to own, talk to or see and was
 //!     refused is noted;
 //!   - X11: without the capability, the sandbox offers a fake X server (a
-//!     socket nobody answers on), and notes when the application knocks.
+//!     socket nobody answers on), and notes when the application knocks;
+//!   - permissions: sound (a fake PipeWire and PulseAudio server, the same
+//!     way), the camera and notifications (their calls on the bus).
 //!
 //! The report (~/.local/state/xapps/trace/<app id>) is what `xapp doctor`
 //! reads to offer the missing pieces.
@@ -31,6 +33,8 @@ pub enum Finding {
     See(String),
     /// An X server.
     X11,
+    /// Something a permission gives (its id: audio, camera, notifications).
+    Wants(String),
 }
 
 impl Finding {
@@ -41,6 +45,7 @@ impl Finding {
             Finding::Talk(n) => ("talk", n),
             Finding::See(n) => ("see", n),
             Finding::X11 => ("capability", "x11"),
+            Finding::Wants(p) => ("wants", p),
         }
     }
 
@@ -50,6 +55,9 @@ impl Finding {
             "talk" => Some(Finding::Talk(value.into())),
             "see" => Some(Finding::See(value.into())),
             "capability" if value == "x11" => Some(Finding::X11),
+            "wants" if xapp_permissions::info(value).is_some() => {
+                Some(Finding::Wants(value.into()))
+            }
             _ => None,
         }
     }
@@ -61,6 +69,10 @@ impl Finding {
             Finding::Talk(n) => format!("wanted to talk to {n} on the session bus"),
             Finding::See(n) => format!("looked for {n} on the session bus"),
             Finding::X11 => "looked for an X server (X11 windows)".into(),
+            Finding::Wants(p) => format!(
+                "wanted what the permission \"{p}\" gives: {}",
+                xapp_permissions::label(p)
+            ),
         }
     }
 }
@@ -81,7 +93,7 @@ pub fn parse_dbus_log(text: &str) -> Vec<Finding> {
             out.push(f);
         }
     };
-    let mut last_call: Option<String> = None;
+    let mut last_call: Option<(String, String)> = None;
     for line in text.lines() {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix("Filtering message due to arg0 ") {
@@ -101,16 +113,35 @@ pub fn parse_dbus_log(text: &str) -> Vec<Finding> {
             }
             last_call = None;
         } else if line.starts_with("*HIDDEN*") {
-            if let Some(dest) = last_call.take()
-                && valid_bus_name(&dest)
-            {
-                add(Finding::Talk(dest));
+            if let Some((dest, method)) = last_call.take() {
+                // What a permission gives: the permission, not the name.
+                let wanted = match dest.as_str() {
+                    "org.freedesktop.portal.Desktop" => {
+                        if method.starts_with("org.freedesktop.portal.Camera.") {
+                            Some("camera")
+                        } else if method.starts_with("org.freedesktop.portal.Notification.") {
+                            Some("notifications")
+                        } else {
+                            None
+                        }
+                    }
+                    "org.freedesktop.Notifications" => Some("notifications"),
+                    _ => None,
+                };
+                if let Some(p) = wanted {
+                    add(Finding::Wants(p.into()));
+                } else if valid_bus_name(&dest) && dest != "org.freedesktop.portal.Desktop" {
+                    add(Finding::Talk(dest));
+                }
             }
         } else if let Some((_, rest)) = line.split_once(": -> ") {
-            // "C6: -> <destination> call ..." (not the proxy's own "fake" calls)
+            // "C6: -> <destination> call <method> at <path>" (not the proxy's
+            // own "fake" calls)
             let mut words = rest.split_whitespace();
-            last_call = match (words.next(), words.next()) {
-                (Some(dest), Some("call")) => Some(dest.to_string()),
+            last_call = match (words.next(), words.next(), words.next()) {
+                (Some(dest), Some("call"), method) => {
+                    Some((dest.to_string(), method.unwrap_or_default().to_string()))
+                }
                 _ => None,
             };
         }
@@ -185,15 +216,17 @@ pub fn load(app_id: &str) -> Option<Report> {
     path.exists().then(|| Report::from_pairs(read_kv(&path)))
 }
 
-/// A fake X server: a socket that notes who knocks and answers nothing.
-pub struct X11Probe {
+/// A fake server (X11, PipeWire, PulseAudio): a socket that notes who
+/// knocks and answers nothing.
+pub struct Probe {
     pub socket: PathBuf,
     hits: Arc<AtomicUsize>,
 }
 
-impl X11Probe {
-    pub fn start(instance: &Path) -> Option<X11Probe> {
-        let socket = instance.join("x11-probe");
+impl Probe {
+    /// A probe at `instance/<name>`.
+    pub fn start(instance: &Path, name: &str) -> Option<Probe> {
+        let socket = instance.join(name);
         let listener = UnixListener::bind(&socket).ok()?;
         let hits = Arc::new(AtomicUsize::new(0));
         let counter = hits.clone();
@@ -203,10 +236,10 @@ impl X11Probe {
                 drop(stream);
             }
         });
-        Some(X11Probe { socket, hits })
+        Some(Probe { socket, hits })
     }
 
-    /// Did the application try to open an X11 window?
+    /// Did the application knock?
     pub fn knocked(&self) -> bool {
         self.hits.load(Ordering::SeqCst) > 0
     }
@@ -234,6 +267,12 @@ C9: -> org.freedesktop.DBus call org.freedesktop.DBus.NameHasOwner at /org/freed
 Filtering message due to arg0 org.kde.kwalletd6, policy: 0 (required 1)
 C10: -> :1.42 call org.example.Thing at /
 *HIDDEN* (ping)
+C11: -> org.freedesktop.portal.Desktop call org.freedesktop.portal.Camera.AccessCamera at /org/freedesktop/portal/desktop
+*HIDDEN* (ping)
+C12: -> org.freedesktop.Notifications call org.freedesktop.Notifications.Notify at /org/freedesktop/Notifications
+*HIDDEN* (ping)
+C13: -> org.freedesktop.portal.Desktop call org.freedesktop.portal.Wallpaper.SetWallpaperURI at /org/freedesktop/portal/desktop
+*HIDDEN* (ping)
 ";
 
     #[test]
@@ -245,6 +284,8 @@ C10: -> :1.42 call org.example.Thing at /
                 Finding::Own("org.mpris.MediaPlayer2.vlc".into()),
                 Finding::Talk("org.kde.kwalletd6".into()),
                 Finding::See("org.gnome.SessionManager".into()),
+                Finding::Wants("camera".into()),
+                Finding::Wants("notifications".into()),
             ]
         );
         assert!(parse_dbus_log("").is_empty());
@@ -259,6 +300,7 @@ C10: -> :1.42 call org.example.Thing at /
             findings: vec![
                 Finding::X11,
                 Finding::Own("org.mpris.MediaPlayer2.vlc".into()),
+                Finding::Wants("audio".into()),
             ],
         };
         let pairs = r
@@ -275,7 +317,7 @@ C10: -> :1.42 call org.example.Thing at /
     fn probe_notes_a_knock() {
         let dir = std::env::temp_dir().join(format!("xapp-probe-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let p = X11Probe::start(&dir).unwrap();
+        let p = Probe::start(&dir, "x11-probe").unwrap();
         assert!(!p.knocked());
         let _ = std::os::unix::net::UnixStream::connect(&p.socket).unwrap();
         for _ in 0..100 {

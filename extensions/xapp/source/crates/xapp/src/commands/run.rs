@@ -94,6 +94,8 @@ pub fn run(args: &[String]) -> Result<u8> {
                     ("cancel".into(), "Cancel".into()),
                 ],
                 default: 1,
+                checked: Vec::new(),
+                yes: None,
             },
         ));
     }
@@ -159,21 +161,18 @@ pub fn run(args: &[String]) -> Result<u8> {
     };
     registry::set_last_version(&m.app_id, &newest)?;
 
-    // 3. Permissions not decided yet.
-    let pending: Vec<(String, Question)> = perms::pending(&m, true)
+    // 3. Permissions not decided yet: one list to tick, like tasksel.
+    let pending: Vec<String> = perms::pending(&m, true)
         .into_iter()
-        .map(|p| {
-            let label = perms::info(&p.id).map_or(p.id.as_str(), |i| i.label);
-            let text = format!("{name} wants: {label}.\n\n\"{}\"\n\nYou can change this later with:\nxapp permissions {} {} yes|no", p.reason, m.app_id, p.id);
-            (p.id.clone(), Question::yes_no(&format!("{name}: permission"), &text, "Allow", "Don't allow", false))
-        })
+        .map(|p| p.id.clone())
         .collect();
     if !pending.is_empty() {
-        let questions: Vec<Question> = pending.iter().map(|(_, q)| q.clone()).collect();
-        match ui::ask(&questions) {
+        let q = permissions_question(&m, &name, &pending);
+        match ui::ask(&[q]) {
             Some(answers) => {
-                for ((id, _), a) in pending.iter().zip(answers) {
-                    perms::set(&m.app_id, id, Some(a == "yes"))?;
+                let ticked = ui::ticked(&answers[0]);
+                for (i, id) in pending.iter().enumerate() {
+                    perms::set(&m.app_id, id, Some(ticked.contains(&i)))?;
                 }
                 // The menu entry follows permissions such as autostart.
                 if in_applications(&c.path) {
@@ -220,4 +219,37 @@ fn print_trace(app_id: &str) {
         eprintln!("  - it {}", f.describe());
     }
     eprintln!("xapp: to allow some of these: xapp doctor {app_id}");
+}
+
+/// The permissions an application asks for, as one list to tick: nothing
+/// ticked at first (the user gives each one); `--yes` gives all but the
+/// ones to give with care.
+fn permissions_question(m: &xapp_format::Manifest, name: &str, ids: &[String]) -> Question {
+    let items: Vec<(String, String, bool)> = ids
+        .iter()
+        .map(|id| {
+            let reason = m.declares(id).map(|p| p.reason.clone()).unwrap_or_default();
+            let mut label = format!("{}: \"{reason}\"", perms::label(id));
+            if perms::warning(id).is_some() {
+                label.push_str(" (careful)");
+            }
+            (id.clone(), label, false)
+        })
+        .collect();
+    let mut text = format!(
+        "{name} asks for these. Tick what you allow (space), then OK.\n\
+         Change them later with: xapp permissions {} <permission> yes|no",
+        m.app_id
+    );
+    for id in ids {
+        if let Some(w) = perms::warning(id) {
+            text.push_str(&format!("\n\nCareful, {}: {w}", perms::label(id)));
+        }
+    }
+    let mut q = Question::checklist(&format!("{name}: permissions"), &text, &items);
+    let safe: Vec<usize> = (0..ids.len())
+        .filter(|&i| perms::warning(&ids[i]).is_none())
+        .collect();
+    q.yes = Some(Question::ticks_answer(&safe));
+    q
 }

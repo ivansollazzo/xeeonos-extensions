@@ -11,7 +11,9 @@
 # Environment: XAPP_SCRIPT (a script of the recipe, run with ROOT=/work/root),
 #   XAPP_REMOVE (paths to delete, one per line, relative to the root),
 #   XAPP_SOURCES (archives of the application's authors, one per line:
-#   "url sha256 /opt/<dir>"), XAPP_ICON (path inside the root, starting
+#   "url sha256 /opt/<dir>"), XAPP_DIRS (directories of the user, mounted
+#   read-only: "/src/<n> /opt/<dir>"), XAPP_AUR (AUR packages, built here
+#   with aur.sh: "name commit"), XAPP_ICON (path inside the root, starting
 #   with /, or in the recipe),
 #   XAPP_CHOWN (uid:gid to give the results to).
 set -euo pipefail
@@ -63,15 +65,55 @@ trap unmount EXIT
 pacman --config /tmp/pacman.conf --root "$root" --cachedir "$root/var/cache/pacman/pkg" \
     -Sy --noconfirm bash glibc "$@"
 
+# AUR packages: built from the commit of the recipe (aur.sh), installed
+# with their dependencies from the snapshot.
+aur_names=()
+if [[ -n ${XAPP_AUR:-} ]]; then
+    pacman -S --noconfirm --needed git >/dev/null
+    . /work/aur.sh
+    aur_files=()
+    while read -r aur_name aur_commit; do
+        [[ -n ${aur_name:-} ]] || continue
+        got=$(aur_fetch "$aur_name" "$aur_commit" "/tmp/aur/$aur_name")
+        if [[ $got != "$aur_commit" ]]; then
+            echo "build-root.sh: $aur_name is not at the commit of the recipe" >&2
+            exit 1
+        fi
+        aur_build "/tmp/aur/$aur_name" "/tmp/aurpkgs/$aur_name"
+        aur_files+=("$(aur_file "/tmp/aurpkgs/$aur_name" "$aur_name")")
+        aur_names+=("$aur_name")
+    done <<< "$XAPP_AUR"
+    # A package built here has no signature: only these files, by path.
+    sed -i 's/^SigLevel = .*/&\nLocalFileSigLevel = Optional/' /tmp/pacman.conf
+    pacman --config /tmp/pacman.conf --root "$root" --cachedir "$root/var/cache/pacman/pkg" \
+        -U --noconfirm "${aur_files[@]}"
+fi
+
 q() { pacman --root "$root" --dbpath "$root/var/lib/pacman" -Q "$@"; }
 q > "$out/packages.txt"
 {
     echo "glibc=$(q glibc | cut -d' ' -f2)"
     echo "libstdcxx=$(q gcc-libs 2>/dev/null | cut -d' ' -f2)"
-    if [[ $# -gt 0 ]]; then
+    # The application: its AUR package, if it has one (the snapshot's
+    # packages may be only for its icon or its libraries).
+    if [[ ${#aur_names[@]} -gt 0 ]]; then
+        echo "main=$(q "${aur_names[0]}" | cut -d' ' -f2)"
+    elif [[ $# -gt 0 ]]; then
         echo "main=$(q "$1" | cut -d' ' -f2)"
     fi
 } > "$out/info"
+
+# copy_in <dir> </opt/name>: the files of <dir> into the root, without the
+# one directory everything is in, if there is one.
+copy_in() {
+    local from=$1
+    mapfile -t entries < <(ls -A "$1")
+    if [[ ${#entries[@]} -eq 1 && -d $1/${entries[0]} ]]; then
+        from=$1/${entries[0]}
+    fi
+    mkdir -p "$root$2"
+    cp -a --no-preserve=ownership "$from/." "$root$2/"
+}
 
 # The application's own archives (recipe "sources"): downloaded, checked
 # against their SHA-256, unpacked into their directory (without the one
@@ -87,15 +129,15 @@ while read -r src_url src_sum src_to; do
     rm -rf /tmp/unpacked && mkdir -p /tmp/unpacked
     bsdtar -xf /tmp/source -C /tmp/unpacked
     rm -f /tmp/source
-    mapfile -t entries < <(ls -A /tmp/unpacked)
-    from=/tmp/unpacked
-    if [[ ${#entries[@]} -eq 1 && -d /tmp/unpacked/${entries[0]} ]]; then
-        from=/tmp/unpacked/${entries[0]}
-    fi
-    mkdir -p "$root${src_to}"
-    cp -a "$from/." "$root${src_to}/"
+    copy_in /tmp/unpacked "$src_to"
     rm -rf /tmp/unpacked
 done <<< "${XAPP_SOURCES:-}"
+# The user's directories (xapp create --dir): copied the same way.
+while read -r src_from src_to; do
+    [[ -n ${src_from:-} ]] || continue
+    echo "Copying the directory of $src_to..."
+    copy_in "$src_from" "$src_to"
+done <<< "${XAPP_DIRS:-}"
 
 # A step of the recipe (e.g. settings files, official binaries).
 if [[ -n ${XAPP_SCRIPT:-} ]]; then

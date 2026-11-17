@@ -1,0 +1,101 @@
+name: xapp wizard
+
+# `xapp create` from start to end, on the runner (podman), for the sources
+# that need no XeeonOS: a directory of the user's (--dir) and the AUR
+# (--aur), each up to a built, verified .xapp. The extension's own build
+# and its test in a XeeonOS VM are in "Build".
+
+on:
+  pull_request:
+    paths:
+      - extensions/xapp/source/**
+      - .github/workflows/xapp-wizard.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The snapshot of the recipes in xeeonos-applications.
+  SNAPSHOT: 2026/11/13
+  # An AUR application with a menu entry, built from source (meson, GTK 3),
+  # whose dependencies are all in the snapshot.
+  AUR_APP: xclicker
+
+jobs:
+  wizard:
+    name: xapp create --dir, --aur
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq erofs-utils jq >/dev/null
+          rustup update stable && rustup default stable
+          (cd extensions/xapp/source && cargo build --release --locked --quiet)
+          echo "XAPP=$PWD/extensions/xapp/source/target/release/xapp" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/out"
+          echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+
+      - name: --dir (a program of the runner, its menu entry and icon)
+        run: |
+          app=$RUNNER_TEMP/MyTool
+          mkdir -p "$app/bin" "$app/share"
+          cp /usr/bin/zstd "$app/bin/mytool"
+          printf '[Desktop Entry]\nType=Application\nName=My Tool\nComment=A test\nExec=mytool %%F\nIcon=mytool\nCategories=Utility;\n' \
+              > "$app/share/mytool.desktop"
+          python3 - "$app/share/mytool.png" <<'EOF'
+          import struct, sys, zlib
+          w = h = 64
+          raw = b"".join(b"\0" + b"\x30\x60\xc0\xff" * w for _ in range(h))
+          def chunk(t, d):
+              return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+          png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
+                 + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+          open(sys.argv[1], "wb").write(png)
+          EOF
+          "$XAPP" --yes create --dir "$app" --snapshot "$SNAPSHOT" --output "$OUT/dir-recipe" --no-build \
+              --permission "camera:Per le videochiamate" --permission "folder:~/Giochi:ro=Per i salvataggi"
+          cat "$OUT/dir-recipe/recipe.json"
+          r=$OUT/dir-recipe/recipe.json
+          jq -e --arg d "$app" '.sources[0].dir == $d and .sources[0].to == "/opt/mytool"' "$r"
+          jq -e '.exec[0] == "/opt/mytool/bin/mytool" and .icon == "/opt/mytool/share/mytool.png"' "$r"
+          jq -e '.packages | length > 0' "$r"
+          # Permissions: the ones given on the command line, with their reasons.
+          jq -e '.permissions | any(.id == "camera" and .reason == "Per le videochiamate")' "$r"
+          jq -e '.permissions | any(.id == "folder:~/Giochi:ro" and .reason == "Per i salvataggi")' "$r"
+          "$XAPP" build "$OUT/dir-recipe" --key "$OUT/ci.key" --output "$OUT/dir.xapp" \
+              --work "$RUNNER_TEMP/work-dir" --no-install
+          "$XAPP" verify "$OUT/dir.xapp"
+          "$XAPP" info "$OUT/dir.xapp" | tee "$RUNNER_TEMP/dir-info.txt"
+          grep -q "The folder ~/Giochi (read only)" "$RUNNER_TEMP/dir-info.txt"
+
+      - name: --aur without reading the PKGBUILD is refused
+        run: |
+          if "$XAPP" --yes create --aur "$AUR_APP" --snapshot "$SNAPSHOT" \
+              --output "$OUT/refused" --no-build 2>&1 | tee "$RUNNER_TEMP/refused.txt"; then
+              echo "::error::--yes built a PKGBUILD nobody approved"
+              exit 1
+          fi
+          grep -q "was not built" "$RUNNER_TEMP/refused.txt"
+          test ! -e "$OUT/refused/recipe.json"
+
+      - name: --aur
+        run: |
+          "$XAPP" --yes create --aur "$AUR_APP" --pkgbuild-ok --snapshot "$SNAPSHOT" \
+              --output "$OUT/aur-recipe" --no-build
+          cat "$OUT/aur-recipe/recipe.json"
+          r=$OUT/aur-recipe/recipe.json
+          jq -e --arg n "$AUR_APP" '.aur[0].name == $n and (.aur[0].commit | test("^[0-9a-f]{40}$"))' "$r"
+          jq -e --arg n "$AUR_APP" '.packages | index($n) == null' "$r"
+          "$XAPP" build "$OUT/aur-recipe" --key "$OUT/ci.key" --output "$OUT/aur.xapp" \
+              --work "$RUNNER_TEMP/work-aur" --no-install
+          "$XAPP" verify "$OUT/aur.xapp"
+          "$XAPP" info "$OUT/aur.xapp"

@@ -28,6 +28,10 @@ if [[ -z $names ]]; then
                 extensions/*/*) n=${file#extensions/}; n=${n%%/*}
                                 [[ -e extensions/$n/extension.conf ]] && echo "$n" ;;
                 docs/* | *.md) ;;
+                # The wizard's own workflow tests only the xapp tool.
+                .github/workflows/xapp-wizard.yml) echo xapp ;;
+                # The plan itself: it runs (and is checked) on every run.
+                tools/plan.sh) ;;
                 *) all ;;
             esac
         done | sort -u)

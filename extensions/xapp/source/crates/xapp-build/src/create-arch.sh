@@ -11,11 +11,14 @@
 #                       icon, like kcalc's accessories-calculator): the
 #                       packages of the snapshot that have it, "package path"
 #
-# Usage: create-arch.sh <snapshot YYYY/MM/DD> <package>
+# Usage: create-arch.sh <snapshot YYYY/MM/DD> <package> [<package file>]
+#   (a package file: built from the AUR by create-aur.sh, not in the
+#   snapshot; its dependencies are)
 # Environment: XAPP_CHOWN (uid:gid to give the results to).
 set -euo pipefail
 snapshot=${1:?snapshot missing}
 pkg=${2:?package missing}
+local_file=${3:-}
 rm -rf /work/pkgroot /work/pkg /work/info.txt /work/closure.txt /work/files.txt /work/icons.txt
 mkdir -p /work/pkgroot /work/pkg
 
@@ -38,14 +41,27 @@ r=/tmp/empty
 mkdir -p "$r/var/lib/pacman"
 p() { pacman --config /tmp/pacman.conf --root "$r" --dbpath "$r/var/lib/pacman" "$@"; }
 p -Sy >/dev/null
-if ! p -Si "$pkg" > /work/info.txt 2>/dev/null; then
-    echo "create-arch.sh: no package \"$pkg\" in the Arch snapshot $snapshot" >&2
-    exit 2
+if [[ -n $local_file ]]; then
+    file=$local_file
+    pacman -Qip "$file" > /work/info.txt
+    # Its dependencies, from the snapshot; then the package itself.
+    mapfile -t deps < <(bsdtar -xOf "$file" .PKGINFO | sed -n 's/^depend = //p' | sed -E 's/[<>=].*//')
+    {
+        if [[ ${#deps[@]} -gt 0 ]]; then
+            p -Sp --print-format '%n' "${deps[@]}"
+        fi
+        echo "$pkg"
+    } | sort -u > /work/closure.txt
+else
+    if ! p -Si "$pkg" > /work/info.txt 2>/dev/null; then
+        echo "create-arch.sh: no package \"$pkg\" in the Arch snapshot $snapshot" >&2
+        exit 2
+    fi
+    p -Sp --print-format '%n' "$pkg" > /work/closure.txt
+    # The package alone (no dependencies), to read its files.
+    p -Swdd --noconfirm --cachedir /work/pkg "$pkg" >/dev/null
+    file=$(find /work/pkg -name "$pkg-*.pkg.tar.*" ! -name '*.sig' | head -n1)
 fi
-p -Sp --print-format '%n' "$pkg" > /work/closure.txt
-# The package alone (no dependencies), to read its files.
-p -Swdd --noconfirm --cachedir /work/pkg "$pkg" >/dev/null
-file=$(find /work/pkg -name "$pkg-*.pkg.tar.*" ! -name '*.sig' | head -n1)
 bsdtar -tf "$file" | grep -v '/$' | grep -v '^\.' > /work/files.txt
 # Only what the package has (bsdtar fails on a pattern that matches nothing).
 grep -E '^usr/share/(applications|icons|pixmaps|metainfo)/' /work/files.txt > /work/wanted.txt || true

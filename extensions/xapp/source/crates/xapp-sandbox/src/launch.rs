@@ -12,7 +12,7 @@ use xapp_core::util::{Result, err, gid, have, uid};
 use xapp_format::{Container, Gpu};
 use xapp_permissions as perms;
 
-use crate::trace::{self, Finding, Report, X11Probe};
+use crate::trace::{self, Finding, Probe, Report};
 use crate::{bwrap, dbus, gpu, mount, seccomp};
 
 /// What to start.
@@ -149,11 +149,31 @@ pub fn run(l: &Launch) -> Result<i32> {
         &bwrap::xapp_info(&m.app_id, &std::process::id().to_string(), network),
     )?;
 
-    let folders: Vec<PathBuf> = perms::CATALOG
+    let mut folders: Vec<PathBuf> = perms::CATALOG
         .iter()
         .filter(|i| i.folder.is_some() && given(i.id))
         .filter_map(|i| perms::folder_path(i.id))
         .filter(|p| p.is_dir())
+        .collect();
+    // Custom permissions: folders, devices, names on the bus.
+    let custom = perms::granted_custom(m, l.known_author);
+    let mut ro_folders = Vec::new();
+    for (path, read_only) in custom.iter().filter_map(perms::Custom::folder_path) {
+        if !path.is_dir() {
+            continue;
+        }
+        if read_only {
+            ro_folders.push(path);
+        } else {
+            folders.push(path);
+        }
+    }
+    let devices: Vec<String> = custom
+        .iter()
+        .filter_map(|c| match c {
+            perms::Custom::Device(d) => Some(d.clone()),
+            _ => None,
+        })
         .collect();
 
     let gpu_given = given("gpu");
@@ -174,9 +194,17 @@ pub fn run(l: &Launch) -> Result<i32> {
         }
     }
 
-    let (args, docs) = lend_files(&l.args, &folders);
+    let all_folders: Vec<PathBuf> = folders.iter().chain(&ro_folders).cloned().collect();
+    let (args, docs) = lend_files(&l.args, &all_folders);
     dbus::start_document_portal();
-    let extra = perms::overrides::load(&m.app_id);
+    let mut extra = perms::overrides::load(&m.app_id);
+    for c in &custom {
+        match c {
+            perms::Custom::Talk(n) => extra.talk.push(n.clone()),
+            perms::Custom::Own(n) => extra.own.push(n.clone()),
+            _ => {}
+        }
+    }
     let dbus_log = l.trace.then(|| instance.0.join("dbus.log"));
     let proxy = dbus::start(
         &instance.0,
@@ -192,7 +220,13 @@ pub fn run(l: &Launch) -> Result<i32> {
 
     let x11 = perms::has_capability(m, "x11");
     let probe = if l.trace && !x11 {
-        X11Probe::start(&instance.0)
+        Probe::start(&instance.0, "x11-probe")
+    } else {
+        None
+    };
+    let audio = given("audio");
+    let audio_probe = if l.trace && !audio {
+        Probe::start(&instance.0, "audio-probe")
     } else {
         None
     };
@@ -206,11 +240,14 @@ pub fn run(l: &Launch) -> Result<i32> {
         runtime_dir: paths::runtime_dir(),
         network,
         gpu: gpu_given,
-        audio: given("audio"),
+        audio,
         camera: given("camera"),
         x11,
         x11_probe: probe.as_ref().map(|p| p.socket.clone()),
         folders,
+        ro_folders,
+        devices,
+        audio_probe: audio_probe.as_ref().map(|p| p.socket.clone()),
         bus: proxy.as_ref().map(|p| p.socket.clone()),
         gpu_binds,
         env,
@@ -289,8 +326,11 @@ pub fn run(l: &Launch) -> Result<i32> {
     drop(proxy);
     if l.trace {
         let mut findings = Vec::new();
-        if probe.as_ref().is_some_and(X11Probe::knocked) {
+        if probe.as_ref().is_some_and(Probe::knocked) {
             findings.push(Finding::X11);
+        }
+        if audio_probe.as_ref().is_some_and(Probe::knocked) {
+            findings.push(Finding::Wants("audio".into()));
         }
         if let Some(log) = &dbus_log {
             findings.extend(trace::parse_dbus_log(
