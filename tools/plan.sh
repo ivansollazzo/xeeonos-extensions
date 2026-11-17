@@ -30,6 +30,8 @@ if [[ -z $names ]]; then
                 docs/* | *.md) ;;
                 # The wizard's own workflow tests only the xapp tool.
                 .github/workflows/xapp-wizard.yml) echo xapp ;;
+                # The plan itself: it runs (and is checked) on every run.
+                tools/plan.sh) ;;
                 *) all ;;
             esac
         done | sort -u)
