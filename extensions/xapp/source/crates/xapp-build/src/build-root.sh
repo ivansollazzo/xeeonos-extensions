@@ -113,7 +113,9 @@ fi
 # would then be stale at every start (VLC: "stale plugins cache", and it
 # scans every plugin again): set the times to 0 now and make those caches
 # again, so that they match the image.
-find "$root" -xdev -exec touch -h -d @0 {} +
+# (/dev, /proc, /sys are mounts of this container, and go away below.)
+find "$root" \( -path "$root/dev" -o -path "$root/proc" -o -path "$root/sys" \) -prune \
+    -o -exec touch -h -d @0 {} +
 if [[ -x $root/usr/lib/vlc/vlc-cache-gen ]]; then
     chroot "$root" /usr/lib/vlc/vlc-cache-gen /usr/lib/vlc/plugins
 fi
