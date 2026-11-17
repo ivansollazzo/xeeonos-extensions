@@ -2,7 +2,8 @@
 //!
 //!   run.rs      xapp run: the questions (Gatekeeper, permissions), then the
 //!               sandbox
-//!   manage.rs   install, remove, list, info, verify, permissions, doctor, logs
+//!   manage.rs   install, remove, list, info, verify, permissions, doctor, logs,
+//!               ps, kill
 //!   tools.rs    build, create (the wizard), and the commands used by the system: sync (the
 //!               monitor), dialog (the dialog window), thumbnail (Files)
 
@@ -41,6 +42,8 @@ pub fn dispatch(args: &[String]) -> Result<u8> {
         "permissions" => manage::permissions(rest),
         "doctor" => manage::doctor(rest),
         "logs" => manage::logs(rest),
+        "ps" => manage::ps(),
+        "kill" => manage::kill(rest),
         "build" => tools::build(rest),
         "create" => tools::create(rest),
         "sync" => tools::sync(rest),

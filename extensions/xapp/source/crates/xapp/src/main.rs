@@ -28,11 +28,18 @@ xapp: XeeonOS applications (.xapp)
   xapp info <app|file>                    what an application is, its author and permissions
   xapp verify <file>                      check signature and integrity, without opening
   xapp remove <app> [--purge]             delete its file (its data stays; --purge: data too)
-  xapp permissions <app> [<permission> yes|no|ask]
-                                          show or change what an application may do
+  xapp permissions <app> [<permission> yes|no|ask | --reset]
+                                          show or change what an application may do (also
+                                          a permission it does not ask for; --reset: forget
+                                          your choices)
+  xapp permissions --all [<permission> yes|no|ask]
+                                          the same for every application (a choice for one
+                                          application wins)
   xapp doctor <app> [--reset]             offer what the last --trace run was refused;
                                           --reset: forget what was added that way
   xapp logs <app> [-f]                    the application's messages (journal)
+  xapp ps                                 the applications running now
+  xapp kill <app>                         stop an application (all its windows)
 
 --yes answers every question with its first choice (scripts).
 Applications are not downloaded from a store: get the file, then run or install it.

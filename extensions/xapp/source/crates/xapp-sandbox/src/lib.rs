@@ -15,6 +15,7 @@
 pub mod bwrap;
 pub mod dbus;
 pub mod gpu;
+pub mod instances;
 pub mod launch;
 pub mod mount;
 pub mod seccomp;

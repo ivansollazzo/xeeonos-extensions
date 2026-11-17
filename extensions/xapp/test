@@ -177,6 +177,14 @@ as_test sh -c "echo secret > $home/secret.txt; echo doc > $home/Documents/doc.tx
 as_test xapp permissions org.xeeonos.Test documents yes
 as_test xapp permissions org.xeeonos.Test pictures no
 as_test xapp permissions org.xeeonos.Test network no
+# Like flatpak override: a choice for all applications (the one for Test,
+# pictures no, wins: IN-PICS-hidden below) and a permission Test does not
+# declare, added by hand.
+as_test xapp permissions --all pictures yes
+expect "^pictures +yes" "$(as_test xapp permissions --all)"
+as_test xapp permissions org.xeeonos.Test folder:~/Giochi:ro yes
+expect "^folder:~/Giochi:ro +yes +added by you" "$(as_test xapp permissions org.xeeonos.Test)"
+expect "^No application is running" "$(as_test xapp ps)"
 as_test gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:minimize,maximize,close'
 ls -la "/run/user/$uid" 2>&1 | sed "s,^,RUNTIME: ," || true  # root cannot look into the FUSE mounts there
 out=$(as_test env XAPP_DEBUG=1 xapp run org.xeeonos.Test /tmp/note.txt 2>&1)
