@@ -89,19 +89,13 @@ jobs:
 
       - name: Heuristics (only what the files say, no list of applications)
         run: |
-          # Libraries a package's programs load while running (dlopen),
-          # among its optional dependencies: Discord (Electron) names
-          # libpulse.so.0.
+          # What its packagers list as optional, when its files cannot
+          # say it: Discord's package has only a program that downloads
+          # Discord when it starts; libpulse (sound) is optional.
           "$XAPP" --yes create --arch discord --snapshot "$SNAPSHOT" \
               --output "$OUT/discord-recipe" --no-build
           cat "$OUT/discord-recipe/recipe.json"
-          w=$HOME/.cache/xapp/create/discord
-          for f in elves loads hints named; do echo "--- $f.txt"; cat "$w/$f.txt"; done
-          echo "--- closure"; tr '\n' ' ' < "$w/closure.txt"; echo
-          echo "--- files (opt/, usr/bin, usr/lib)"; grep -E '^(opt|usr/bin|usr/lib)/' "$w/files.txt" | head -40
-          # The application gets libpulse: from its dependencies or proposed.
-          grep -qx libpulse "$w/closure.txt" ||
-              jq -e '.packages | index("libpulse") != null' "$OUT/discord-recipe/recipe.json"
+          jq -e '.packages | index("libpulse") != null' "$OUT/discord-recipe/recipe.json"
           jq -e '.permissions | any(.id == "audio")' "$OUT/discord-recipe/recipe.json"
           # 32-bit packages: multilib, and 32-bit graphics drivers.
           "$XAPP" --yes create --arch steam --snapshot "$SNAPSHOT" \

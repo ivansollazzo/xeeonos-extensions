@@ -13,11 +13,11 @@
 #   /work/loads.txt     "library package": libraries its programs name and
 #                       load while running (dlopen: sound, video, ...) that
 #                       its dependencies do not bring (optional ones)
-#   /work/named.txt     the libraries its programs name (for loads.txt)
 #   /work/hints.txt     "permission what": what its programs name that a
 #                       permission gives (scan.sh)
 #   /work/multilib.txt  why it needs the multilib repository, if it does
 #   /work/gpu32.txt     32-bit graphics drivers to propose (scan.sh)
+#   /work/optdeps.txt   its optional dependencies: "name<TAB>description"
 #
 # Usage: create-arch.sh <snapshot YYYY/MM/DD> <package> [<package file>]
 #   (a package file: built from the AUR by create-aur.sh, not in the
@@ -28,7 +28,7 @@ snapshot=${1:?snapshot missing}
 pkg=${2:?package missing}
 local_file=${3:-}
 rm -rf /work/pkgroot /work/pkg /work/info.txt /work/closure.txt /work/files.txt /work/icons.txt \
-    /work/loads.txt /work/hints.txt /work/multilib.txt /work/gpu32.txt /work/named.txt
+    /work/loads.txt /work/hints.txt /work/multilib.txt /work/gpu32.txt /work/optdeps.txt
 mkdir -p /work/pkgroot /work/pkg
 . /work/scan.sh
 
@@ -94,8 +94,6 @@ scan_files /tmp/full /work/files.txt
 cp /tmp/hints /work/hints.txt
 sed 's|.*/||' /work/files.txt | sort -u > /tmp/own
 sort -u /tmp/named | comm -23 - /tmp/own > /tmp/named.sorted
-cp /tmp/named.sorted /work/named.txt
-cp /tmp/elves /work/elves.txt
 owners_of usr/lib /tmp/named.sorted > /tmp/owners
 # The closure's packages that are in the snapshot (not one built from the
 # AUR), for pacman.
@@ -112,6 +110,26 @@ if [[ -s /tmp/elf32 ]]; then
     echo "32-bit programs: $(head -n3 /tmp/elf32 | tr '\n' ' ')" >> /work/multilib.txt
 fi
 gpu32 /work/closure.txt > /work/gpu32.txt
+# Its optional dependencies: what its packagers say it can use (sound,
+# tray, ...), even when its files cannot say it (a program it downloads
+# when it starts). Those the snapshot has and the closure does not:
+# "name<TAB>description".
+: > /work/optdeps.txt
+awk '/^Optional Deps/ {on = 1; sub(/^Optional Deps *: */, ""); print; next}
+     on && /^[^ ]/ {on = 0}
+     on {sub(/^ +/, ""); print}' /work/info.txt |
+    while IFS= read -r line; do
+        [[ -n $line && $line != None ]] || continue
+        name=${line%%:*}
+        name=${name%%[<>=]*}
+        desc=${line#*:}
+        desc=${desc# }
+        desc=${desc% \[installed\]}
+        grep -qxF "$name" /work/closure.txt && continue
+        if p -Sp --noconfirm --print-format '%n' "$name" >/dev/null 2>&1; then
+            printf '%s\t%s\n' "$name" "$desc" >> /work/optdeps.txt
+        fi
+    done
 # Menu icons named after a theme icon: who has them (the files database).
 : > /work/icons.txt
 mapfile -t icons < <(cat /work/pkgroot/usr/share/applications/*.desktop 2>/dev/null |

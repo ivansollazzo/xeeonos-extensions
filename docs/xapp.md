@@ -672,6 +672,7 @@ che c'è nella ricetta.
 | Cosa trova nei file | Cosa propone |
 |---|---|
 | librerie **nominate** nei programmi e caricate durante l'uso (`dlopen`), che le dipendenze non portano (per esempio `libpulse.so.0` in Electron, una dipendenza solo opzionale del pacchetto) | i pacchetti che le contengono, con una domanda (tutte le sorgenti: `--arch`, `--aur`, `--url`, `--dir`) |
+| le **dipendenze opzionali** del pacchetto (`--arch`, `--aur`): quello che chi lo impacchetta dice che può usare, anche quando i file non lo dicono (un programma che l'app scarica all'avvio) | una lista a caselle; già spuntate quelle che, dalla descrizione, riguardano suono, fotocamera, notifiche, tray, grafica (Discord: `libpulse`, "Pulseaudio support") |
 | un pacchetto, o una sua dipendenza, del repository **multilib**; oppure programmi ELF **a 32 bit** | `"multilib": true` (e, per archivi e cartelle, i `lib32-*` con le librerie che i programmi a 32 bit chiedono) |
 | programmi a 32 bit che disegnano con OpenGL o Vulkan (o un loader `lib32-` nella chiusura) | i driver grafici a 32 bit (`lib32-mesa`, `lib32-vulkan-radeon`, `-intel`, `-nouveau`): XeeonOS non ne ha da prestare |
 | il permesso `audio`, ma solo ALSA (`alsa-lib` senza librerie di PulseAudio o PipeWire) | `pipewire-alsa`: nella sandbox non c'è la scheda audio, solo il socket di PipeWire |

@@ -495,6 +495,33 @@ pub fn default_reason(id: &str) -> String {
     .to_string()
 }
 
+/// An optional dependency ticked at first: from what it is for (its
+/// description), never from its name or the application's: sound, camera,
+/// notifications, the tray, graphics.
+pub fn optional_wanted(description: &str) -> bool {
+    let d = description.to_lowercase();
+    [
+        "sound",
+        "audio",
+        "pulseaudio",
+        "pipewire",
+        "alsa",
+        "microphone",
+        "camera",
+        "webcam",
+        "notification",
+        "tray",
+        "indicator",
+        "acceleration",
+        "vaapi",
+        "va-api",
+        "vulkan",
+        "opengl",
+    ]
+    .iter()
+    .any(|k| d.contains(k))
+}
+
 /// The package that sends ALSA to PipeWire, if the application needs it:
 /// it has the permission `audio` and plays sound only through ALSA
 /// (alsa-lib, but no PulseAudio or PipeWire library).
@@ -782,6 +809,8 @@ struct Found {
     multilib: Vec<String>,
     /// 32-bit graphics drivers to propose.
     gpu32: Vec<String>,
+    /// The package's optional dependencies (name, what for), to propose.
+    optdeps: Vec<(String, String)>,
     /// More lines for the summary.
     notes: Vec<String>,
 }
@@ -1048,6 +1077,13 @@ fn from_package(o: &Options, pkg: &str, work: &Path) -> Result<Found> {
         aur: Vec::new(),
         multilib: non_empty_lines(work, "multilib.txt"),
         gpu32: non_empty_lines(work, "gpu32.txt"),
+        optdeps: non_empty_lines(work, "optdeps.txt")
+            .iter()
+            .filter_map(|l| {
+                let (n, d) = l.split_once('\t')?;
+                Some((n.to_string(), d.to_string()))
+            })
+            .collect(),
     })
 }
 
@@ -1398,6 +1434,7 @@ fn from_files(o: &Options, origin: &Source, snapshot: &str, work: &Path) -> Resu
         aur: Vec::new(),
         multilib: non_empty_lines(work, "multilib.txt"),
         gpu32: non_empty_lines(work, "gpu32.txt"),
+        optdeps: Vec::new(),
         notes,
         short,
     })
@@ -1528,6 +1565,23 @@ pub fn create(o: &Options) -> Result<PathBuf> {
             true,
         ));
     }
+    if !f.optdeps.is_empty() {
+        let items: Vec<(String, String, bool)> = f
+            .optdeps
+            .iter()
+            .map(|(n, d)| (n.clone(), format!("{n}: {d}"), optional_wanted(d)))
+            .collect();
+        let mut q = Question::checklist(
+            "xapp create: optional packages",
+            "Its packagers list these as optional: what it can use if they are there \
+             (some it may download or load only when it runs). Tick what to put in the \
+             application; ticked: sound, camera, notifications, tray, graphics.",
+            &items,
+        );
+        let ticked: Vec<usize> = (0..items.len()).filter(|&i| items[i].2).collect();
+        q.yes = Some(Question::ticks_answer(&ticked));
+        questions.push(q);
+    }
     let answers =
         ui::ask(&questions).ok_or_else(|| err("nobody to answer the wizard (use --yes)"))?;
     // The answers after the summary, in the order of the questions.
@@ -1540,6 +1594,17 @@ pub fn create(o: &Options) -> Result<PathBuf> {
     if !f.gpu32.is_empty() && rest.next().is_some_and(|a| a == "yes") {
         packages.extend(f.gpu32.iter().cloned());
         multilib = true;
+    }
+    if !f.optdeps.is_empty()
+        && let Some(a) = rest.next()
+    {
+        for i in ui::ticked(a) {
+            if let Some((n, _)) = f.optdeps.get(i)
+                && !packages.contains(n)
+            {
+                packages.push(n.clone());
+            }
+        }
     }
     let permissions = choose_permissions(&proposals, &given)?;
     // Sound for an application that speaks only ALSA: through PipeWire.
@@ -1761,6 +1826,15 @@ mod tests {
             .map(|p| p.id)
             .collect();
         assert_eq!(ids, ["camera"]);
+    }
+
+    #[test]
+    fn optional_dependencies() {
+        assert!(optional_wanted("Pulseaudio support"));
+        assert!(optional_wanted("Systray indicator support"));
+        assert!(optional_wanted("Hardware video acceleration"));
+        assert!(!optional_wanted("Open files"));
+        assert!(!optional_wanted("Spell checking"));
     }
 
     #[test]
