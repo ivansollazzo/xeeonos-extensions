@@ -108,6 +108,28 @@ if [[ -n ${XAPP_ICON:-} ]]; then
     cp "$src" "$out/icon.${XAPP_ICON##*.}"
 fi
 
+# Every time in the image is 0 (mkfs.erofs -T0, for builds that give the
+# same image). Caches that record the times of the files they describe
+# would then be stale at every start (VLC: "stale plugins cache", and it
+# scans every plugin again): set the times to 0 now and make those caches
+# again, so that they match the image.
+# (/dev, /proc, /sys are mounts of this container, and go away below.)
+find "$root" \( -path "$root/dev" -o -path "$root/proc" -o -path "$root/sys" \) -prune \
+    -o -exec touch -h -d @0 {} +
+if [[ -x $root/usr/lib/vlc/vlc-cache-gen ]]; then
+    chroot "$root" /usr/lib/vlc/vlc-cache-gen /usr/lib/vlc/plugins
+fi
+# Python checks its compiled files against the time of the source: compile
+# them without that check (the image never changes).
+for py in "$root"/usr/bin/python3.[0-9]*; do
+    [[ -x $py && ! -L $py ]] || continue
+    v=${py##*/}
+    if [[ -d $root/usr/lib/$v ]]; then
+        chroot "$root" "/usr/bin/$v" -m compileall -q -f -j0 \
+            --invalidation-mode unchecked-hash "/usr/lib/$v" >/dev/null || true
+    fi
+done
+
 # Out: what only a whole system or a developer needs. The sandbox brings
 # its own empty /tmp, /var, /run, /proc, /dev, /sys, and the home.
 # Never delete through a mount of this container's /dev, /proc, /sys.
