@@ -13,7 +13,8 @@
 #   XAPP_SOURCES (archives of the application's authors, one per line:
 #   "url sha256 /opt/<dir>"), XAPP_DIRS (directories of the user, mounted
 #   read-only: "/src/<n> /opt/<dir>"), XAPP_AUR (AUR packages, built here
-#   with aur.sh: "name commit"), XAPP_ICON (path inside the root, starting
+#   with aur.sh: "name commit"), XAPP_MULTILIB (not empty: the snapshot's
+#   multilib repository too, for 32-bit packages), XAPP_ICON (path inside the root, starting
 #   with /, or in the recipe),
 #   XAPP_CHOWN (uid:gid to give the results to).
 set -euo pipefail
@@ -46,6 +47,11 @@ Server = https://archive.archlinux.org/repos/$snapshot/\$repo/os/\$arch
 [extra]
 Server = https://archive.archlinux.org/repos/$snapshot/\$repo/os/\$arch
 CONF
+# 32-bit packages: only if the recipe says so ("multilib": true).
+if [[ -n ${XAPP_MULTILIB:-} ]]; then
+    printf '\n[multilib]\nServer = https://archive.archlinux.org/repos/%s/$repo/os/$arch\n' \
+        "$snapshot" >> /tmp/pacman.conf
+fi
 # Like pacstrap: /dev, /proc, /sys in the root so that the packages' hooks
 # (library cache, icon and font caches, GSettings schemas) run. Only bind
 # mounts, because a rootless container (podman on XeeonOS, on the CI

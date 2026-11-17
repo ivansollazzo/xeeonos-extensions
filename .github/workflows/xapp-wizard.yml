@@ -77,6 +77,32 @@ jobs:
           "$XAPP" info "$OUT/dir.xapp" | tee "$RUNNER_TEMP/dir-info.txt"
           grep -q "The folder ~/Giochi (read only)" "$RUNNER_TEMP/dir-info.txt"
 
+      - name: '"multilib": true (32-bit packages of the snapshot)'
+        run: |
+          mkdir -p "$OUT/multilib-recipe"
+          jq '.multilib = true | .packages += ["lib32-zstd"]' "$OUT/dir-recipe/recipe.json" \
+              > "$OUT/multilib-recipe/recipe.json"
+          "$XAPP" build "$OUT/multilib-recipe" --key "$OUT/ci.key" --output "$OUT/multilib.xapp" \
+              --work "$RUNNER_TEMP/work-multilib" --no-install
+          "$XAPP" verify "$OUT/multilib.xapp"
+          grep -q '^lib32-zstd ' "$RUNNER_TEMP/work-multilib/out/packages.txt"
+
+      - name: Heuristics (only what the files say, no list of applications)
+        run: |
+          # Libraries a package's programs load while running (dlopen),
+          # among its optional dependencies: Discord (Electron) names
+          # libpulse.so.0.
+          "$XAPP" --yes create --arch discord --snapshot "$SNAPSHOT" \
+              --output "$OUT/discord-recipe" --no-build
+          jq -e '.packages | index("libpulse") != null' "$OUT/discord-recipe/recipe.json"
+          jq -e '.permissions | any(.id == "audio")' "$OUT/discord-recipe/recipe.json"
+          # 32-bit packages: multilib, and 32-bit graphics drivers.
+          "$XAPP" --yes create --arch steam --snapshot "$SNAPSHOT" \
+              --output "$OUT/steam-recipe" --no-build
+          cat "$OUT/steam-recipe/recipe.json"
+          jq -e '.multilib == true' "$OUT/steam-recipe/recipe.json"
+          jq -e '.packages | index("lib32-mesa") != null' "$OUT/steam-recipe/recipe.json"
+
       - name: --aur without reading the PKGBUILD is refused
         run: |
           if "$XAPP" --yes create --aur "$AUR_APP" --snapshot "$SNAPSHOT" \

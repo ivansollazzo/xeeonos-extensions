@@ -42,6 +42,8 @@ use xapp_core::util::{Result, err, gid, uid, valid_app_id};
 const ARCH_SCRIPT: &str = include_str!("create-arch.sh");
 const URL_SCRIPT: &str = include_str!("create-url.sh");
 const AUR_SCRIPT: &str = include_str!("create-aur.sh");
+/// Shared by the scripts above: what the files of an application say.
+const SCAN_LIB: &str = include_str!("scan.sh");
 
 /// Where the application comes from.
 pub enum Source {
@@ -493,6 +495,20 @@ pub fn default_reason(id: &str) -> String {
     .to_string()
 }
 
+/// The package that sends ALSA to PipeWire, if the application needs it:
+/// it has the permission `audio` and plays sound only through ALSA
+/// (alsa-lib, but no PulseAudio or PipeWire library).
+pub fn alsa_bridge(
+    permissions: &[&str],
+    closure: &[String],
+    packages: &[String],
+) -> Option<&'static str> {
+    let has = |p: &str| closure.iter().chain(packages).any(|c| c == p);
+    let other = ["libpulse", "pipewire", "pipewire-alsa", "pipewire-pulse"];
+    (permissions.contains(&"audio") && has("alsa-lib") && !other.iter().any(|p| has(p)))
+        .then_some("pipewire-alsa")
+}
+
 /// `--permission <id>[=<reason>]` (or `<catalog id>:<reason>`): the id
 /// and the reason (empty: the default one).
 pub fn parse_permission(arg: &str) -> Result<(String, String)> {
@@ -761,6 +777,11 @@ struct Found {
     sources: Vec<Value>,
     /// `--aur`: {"name", "commit"}.
     aur: Vec<Value>,
+    /// Why it needs the multilib repository (32-bit programs or packages):
+    /// empty if it does not.
+    multilib: Vec<String>,
+    /// 32-bit graphics drivers to propose.
+    gpu32: Vec<String>,
     /// More lines for the summary.
     notes: Vec<String>,
 }
@@ -784,6 +805,7 @@ fn in_container(
     how: Run,
 ) -> Result<()> {
     fs::write(work.join(script), body)?;
+    fs::write(work.join("scan.sh"), SCAN_LIB)?;
     let engine = crate::engine()?;
     let mut cmd = Command::new(&engine);
     cmd.args(["run", "--rm"])
@@ -821,6 +843,27 @@ fn lines_of(work: &Path, f: &str) -> Vec<String> {
         .collect()
 }
 
+/// The packages of a "library package" file of work/ (glibc left out),
+/// sorted, once each.
+fn lib_packages(work: &Path, f: &str) -> Vec<String> {
+    let mut v: Vec<String> = lines_of(work, f)
+        .iter()
+        .filter_map(|l| l.split_once(' ').map(|(_, p)| p.to_string()))
+        .filter(|p| p != "glibc")
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// The lines of a file of work/ that are not empty.
+fn non_empty_lines(work: &Path, f: &str) -> Vec<String> {
+    lines_of(work, f)
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .collect()
+}
+
 /// The application id given with --id, checked.
 fn chosen_id(o: &Options) -> Result<Option<String>> {
     match &o.app_id {
@@ -845,10 +888,7 @@ fn from_arch(o: &Options, pkg: &str, snapshot: &str, work: &Path) -> Result<Foun
 
 /// The packages that are not in the snapshot.
 fn not_in_snapshot(work: &Path) -> Vec<String> {
-    lines_of(work, "missing.txt")
-        .into_iter()
-        .filter(|l| !l.trim().is_empty())
-        .collect()
+    non_empty_lines(work, "missing.txt")
 }
 
 /// The question before building a PKGBUILD: "Don't build" first, so that
@@ -996,13 +1036,18 @@ fn from_package(o: &Options, pkg: &str, work: &Path) -> Result<Found> {
         mime_types: d.mime_types,
         wm_class,
         notes: vec![format!("Packages: {} (from {pkg})", closure.len())],
+        loads: lib_packages(work, "loads.txt")
+            .into_iter()
+            .filter(|p| !packages.contains(p) && !closure.contains(p))
+            .collect(),
         packages,
-        loads: Vec::new(),
         closure,
         files,
-        hints: Vec::new(),
+        hints: lines_of(work, "hints.txt"),
         sources: Vec::new(),
         aur: Vec::new(),
+        multilib: non_empty_lines(work, "multilib.txt"),
+        gpu32: non_empty_lines(work, "gpu32.txt"),
     })
 }
 
@@ -1273,18 +1318,8 @@ fn from_files(o: &Options, origin: &Source, snapshot: &str, work: &Path) -> Resu
         return Err(err(format!("no {icon} in {shown}")));
     }
 
-    let pkgs = |f: &str| -> Vec<String> {
-        let mut v: Vec<String> = lines_of(work, f)
-            .iter()
-            .filter_map(|l| l.split_once(' ').map(|(_, p)| p.to_string()))
-            .filter(|p| p != "glibc")
-            .collect();
-        v.sort();
-        v.dedup();
-        v
-    };
-    let packages = pkgs("needs.txt");
-    let loads: Vec<String> = pkgs("loads.txt")
+    let packages = lib_packages(work, "needs.txt");
+    let loads: Vec<String> = lib_packages(work, "loads.txt")
         .into_iter()
         .filter(|p| !packages.contains(p))
         .collect();
@@ -1361,6 +1396,8 @@ fn from_files(o: &Options, origin: &Source, snapshot: &str, work: &Path) -> Resu
             _ => json!({"url": final_url, "sha256": sha256, "to": to}),
         }],
         aur: Vec::new(),
+        multilib: non_empty_lines(work, "multilib.txt"),
+        gpu32: non_empty_lines(work, "gpu32.txt"),
         notes,
         short,
     })
@@ -1446,6 +1483,13 @@ pub fn create(o: &Options) -> Result<PathBuf> {
         .map(|p| parse_permission(p))
         .collect::<Result<_>>()?;
     let proposals = propose(&f.closure, &f.categories, &f.mime_types, &f.files, &f.hints);
+    let mut notes = f.notes.clone();
+    if !f.multilib.is_empty() {
+        notes.push(format!(
+            "Needs the multilib repository (32-bit): {}",
+            f.multilib.join("; ")
+        ));
+    }
     let summary = format!(
         "{} {} ({})\n{}\n\nCommand: {}\nIcon: {}\n{}\n\n\
          Next: the list of permissions, with those it probably needs ticked.",
@@ -1455,7 +1499,7 @@ pub fn create(o: &Options) -> Result<PathBuf> {
         f.description,
         f.exec.join(" "),
         f.icon,
-        f.notes.join("\n"),
+        notes.join("\n"),
     );
     let mut questions = vec![Question::message("xapp create", &summary)];
     if !f.loads.is_empty() {
@@ -1471,13 +1515,55 @@ pub fn create(o: &Options) -> Result<PathBuf> {
             true,
         ));
     }
+    if !f.gpu32.is_empty() {
+        questions.push(Question::yes_no(
+            "xapp create: 32-bit graphics",
+            &format!(
+                "It has 32-bit programs that draw with OpenGL or Vulkan, and XeeonOS has \
+                 no 32-bit graphics drivers to lend them. Put these in the application?\n\n{}",
+                f.gpu32.join(" ")
+            ),
+            "Put them in",
+            "Leave them out",
+            true,
+        ));
+    }
     let answers =
         ui::ask(&questions).ok_or_else(|| err("nobody to answer the wizard (use --yes)"))?;
+    // The answers after the summary, in the order of the questions.
+    let mut rest = answers.iter().skip(1);
     let mut packages = f.packages.clone();
-    if !f.loads.is_empty() && answers.get(1).is_some_and(|a| a == "yes") {
+    if !f.loads.is_empty() && rest.next().is_some_and(|a| a == "yes") {
         packages.extend(f.loads.iter().cloned());
     }
+    let mut multilib = !f.multilib.is_empty();
+    if !f.gpu32.is_empty() && rest.next().is_some_and(|a| a == "yes") {
+        packages.extend(f.gpu32.iter().cloned());
+        multilib = true;
+    }
     let permissions = choose_permissions(&proposals, &given)?;
+    // Sound for an application that speaks only ALSA: through PipeWire.
+    let ids: Vec<&str> = permissions
+        .iter()
+        .filter_map(|p| p.get("id").and_then(Value::as_str))
+        .collect();
+    if let Some(bridge) = alsa_bridge(&ids, &f.closure, &packages) {
+        let q = Question::yes_no(
+            "xapp create: sound",
+            &format!(
+                "It plays sound only through ALSA (alsa-lib, without PulseAudio or PipeWire \
+                 libraries). In the sandbox there is no sound card, only PipeWire: put {bridge} \
+                 in the application, so that ALSA goes to PipeWire?"
+            ),
+            "Put it in",
+            "Leave it out",
+            true,
+        );
+        let a = ui::ask(&[q]).ok_or_else(|| err("nobody to answer the wizard (use --yes)"))?;
+        if a.first().is_some_and(|a| a == "yes") {
+            packages.push(bridge.to_string());
+        }
+    }
 
     let names: Map<String, Value> = f
         .names
@@ -1497,6 +1583,9 @@ pub fn create(o: &Options) -> Result<PathBuf> {
     }
     recipe.insert("snapshot".into(), json!(snapshot));
     recipe.insert("packages".into(), json!(packages));
+    if multilib {
+        recipe.insert("multilib".into(), json!(true));
+    }
     if !f.sources.is_empty() {
         recipe.insert("sources".into(), Value::Array(f.sources.clone()));
     }
@@ -1672,6 +1761,25 @@ mod tests {
             .map(|p| p.id)
             .collect();
         assert_eq!(ids, ["camera"]);
+    }
+
+    #[test]
+    fn sound_through_pipewire() {
+        let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let alsa_only = v(&["glibc", "alsa-lib"]);
+        assert_eq!(
+            alsa_bridge(&["audio"], &alsa_only, &[]),
+            Some("pipewire-alsa")
+        );
+        // Not without the permission, nor with a PulseAudio library (the
+        // closure's or one the user put in).
+        assert_eq!(alsa_bridge(&["network"], &alsa_only, &[]), None);
+        assert_eq!(alsa_bridge(&["audio"], &alsa_only, &v(&["libpulse"])), None);
+        assert_eq!(
+            alsa_bridge(&["audio"], &v(&["alsa-lib", "pipewire"]), &[]),
+            None
+        );
+        assert_eq!(alsa_bridge(&["audio"], &v(&["glibc"]), &[]), None);
     }
 
     #[test]

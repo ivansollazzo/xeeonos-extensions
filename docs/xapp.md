@@ -591,6 +591,9 @@ Una **ricetta** è una cartella con `recipe.json`:
   dipendenze. Vedi `--aur` più sotto.
 - `user_namespaces`: di solito si omette, `xapp build` lo capisce
   dall'immagine (sezione 8).
+- `multilib`: `true` aggiunge il repository multilib dello stesso
+  snapshot (pacchetti a 32 bit, `lib32-*`, e app che ne hanno bisogno).
+  La build fa solo quello che dice la ricetta; è il wizard a proporlo.
 
 `xapp build <ricetta>`:
 
@@ -645,8 +648,8 @@ Con `--arch`:
    notifiche), anche quando si porta tutto da sé come Discord; dalle
    categorie (chat e chiamate → audio, fotocamera, notifiche; audio e
    video → audio; browser → Download); dai tipi di file che apre
-   (immagini → Immagini, PDF e testo → Documenti, ...); e, per archivi e
-   cartelle, da quello che i programmi nominano (`/dev/video`, il portal
+   (immagini → Immagini, PDF e testo → Documenti, ...); e da quello che
+   i programmi nominano (`/dev/video`, il portal
    Camera → fotocamera; `libpulse.so`, `libpipewire`, `libasound.so` →
    audio). L'autore spunta o toglie quello che vuole. L'ultima voce,
    **"Add a custom permission…"**, chiede tipo, nome e motivo di un
@@ -654,9 +657,25 @@ Con `--arch`:
    comando: `--permission camera`, `--permission "camera:Per le
    videochiamate"`, `--permission "folder:~/Giochi:ro=Per i salvataggi"`
    (ripetibile; quelli personalizzati vogliono il motivo dopo `=`);
-4. scrive `<pacchetto>/recipe.json` (`--output` per un'altra cartella);
-5. chiede se costruire subito l'app e metterla in `~/Applications`
+4. le **euristiche** qui sotto ("Cosa propone il wizard");
+5. scrive `<pacchetto>/recipe.json` (`--output` per un'altra cartella);
+6. chiede se costruire subito l'app e metterla in `~/Applications`
    (`--no-build` per fermarsi alla ricetta).
+
+#### Cosa propone il wizard
+
+Il wizard non conosce le singole app: guarda solo quello che dicono i
+file (`scan.sh`), **propone**, l'utente conferma, e tutto finisce scritto
+nella ricetta, dove si vede e si cambia. `xapp build` poi fa solo quello
+che c'è nella ricetta.
+
+| Cosa trova nei file | Cosa propone |
+|---|---|
+| librerie **nominate** nei programmi e caricate durante l'uso (`dlopen`), che le dipendenze non portano (per esempio `libpulse.so.0` in Electron, una dipendenza solo opzionale del pacchetto) | i pacchetti che le contengono, con una domanda (tutte le sorgenti: `--arch`, `--aur`, `--url`, `--dir`) |
+| un pacchetto, o una sua dipendenza, del repository **multilib**; oppure programmi ELF **a 32 bit** | `"multilib": true` (e, per archivi e cartelle, i `lib32-*` con le librerie che i programmi a 32 bit chiedono) |
+| programmi a 32 bit che disegnano con OpenGL o Vulkan (o un loader `lib32-` nella chiusura) | i driver grafici a 32 bit (`lib32-mesa`, `lib32-vulkan-radeon`, `-intel`, `-nouveau`): XeeonOS non ne ha da prestare |
+| il permesso `audio`, ma solo ALSA (`alsa-lib` senza librerie di PulseAudio o PipeWire) | `pipewire-alsa`: nella sandbox non c'è la scheda audio, solo il socket di PipeWire |
+| quello che i programmi nominano (`/dev/video`, il portal Camera; `libpulse.so`, `libpipewire`, `libasound.so`) | i permessi `camera`, `audio` già spuntati nella lista |
 
 Con `--url` (solo `https://`):
 
@@ -762,7 +781,7 @@ dentro xctl, e non richiede sudo.
 | `xapp-permissions` | catalogo dei permessi e delle capacità, scelte dell'utente (per app e per tutte), permessi aggiunti a mano, aggiunte di `xapp doctor` (`overrides.rs`) |
 | `xapp-sandbox` | montaggio, seccomp, filtro D-Bus, GPU, riga di comando di bubblewrap, avvio nello scope, `--trace` (`trace.rs`), app aperte (`instances.rs`) |
 | `xapp-desktop` | registro, voci di menu, tipo di file, `xapp sync` |
-| `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`, `create-url.sh`, `create-aur.sh`), i pacchetti AUR (`aur.sh`) |
+| `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`, `create-url.sh`, `create-aur.sh`, quello che dicono i file in `scan.sh`), i pacchetti AUR (`aur.sh`) |
 | `xapp` | il programma: legge la riga di comando |
 
 Dipendenze esterne, poche e note: `serde_json` (JSON), `sha2` (SHA-256),
