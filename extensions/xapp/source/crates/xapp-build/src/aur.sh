@@ -58,7 +58,10 @@ aur_build() {
     mount --rbind /dev "$b/dev"
     mount -t proc proc "$b/proc" 2>/dev/null || mount --rbind /proc "$b/proc"
     mount --rbind /sys "$b/sys"
-    pacman --config /tmp/pacman.conf --root "$b" --cachedir /tmp/aur-cache \
+    # The snapshot's repositories, with everything a build needs: headers
+    # and pkg-config files too (xapp build leaves them out of applications).
+    grep -v '^NoExtract' /tmp/pacman.conf > /tmp/aur-pacman.conf
+    pacman --config /tmp/aur-pacman.conf --root "$b" --cachedir /tmp/aur-cache \
         -Sy --noconfirm --needed base base-devel git "${needs[@]}" >/dev/null
     cp -L /etc/resolv.conf "$b/etc/resolv.conf"
     chroot "$b" useradd -m builder
