@@ -96,8 +96,9 @@ jobs:
               --output "$OUT/discord-recipe" --no-build
           cat "$OUT/discord-recipe/recipe.json"
           w=$HOME/.cache/xapp/create/discord
-          for f in loads hints named; do echo "--- $f.txt"; cat "$w/$f.txt"; done
-          echo "--- closure (sound)"; grep -E 'pulse|pipewire|alsa' "$w/closure.txt" || true
+          for f in elves loads hints named; do echo "--- $f.txt"; cat "$w/$f.txt"; done
+          echo "--- closure"; tr '\n' ' ' < "$w/closure.txt"; echo
+          echo "--- files (opt/, usr/bin, usr/lib)"; grep -E '^(opt|usr/bin|usr/lib)/' "$w/files.txt" | head -40
           # The application gets libpulse: from its dependencies or proposed.
           grep -qx libpulse "$w/closure.txt" ||
               jq -e '.packages | index("libpulse") != null' "$OUT/discord-recipe/recipe.json"

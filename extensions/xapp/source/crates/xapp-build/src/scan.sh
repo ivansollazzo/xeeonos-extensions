@@ -12,6 +12,7 @@
 #   /tmp/named, /tmp/named32     libraries they name (loaded while running)
 #   /tmp/programs                programs (ELF executables with an interpreter)
 #   /tmp/elf32                   the 32-bit ones
+#   /tmp/elves                   every ELF file looked at
 #   /tmp/hints                   "permission what": what a permission gives,
 #                                named in them (camera /dev/video, audio libpulse.so)
 scan_files() {
@@ -23,10 +24,12 @@ scan_files() {
     : > /tmp/programs
     : > /tmp/elf32
     : > /tmp/hints
+    : > /tmp/elves
     while IFS= read -r f; do
         p=$root/$f
         [[ -f $p && ! -L $p ]] || continue
         [[ $(head -c4 "$p" | od -An -tx1 | tr -d ' \n') == 7f454c46 ]] || continue
+        echo "$f" >> /tmp/elves
         # The fifth byte of an ELF file: 1 for 32-bit, 2 for 64-bit.
         class=$(od -An -tu1 -j4 -N1 "$p" | tr -d ' ')
         if [[ $class == 1 ]]; then

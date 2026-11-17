@@ -95,6 +95,7 @@ cp /tmp/hints /work/hints.txt
 sed 's|.*/||' /work/files.txt | sort -u > /tmp/own
 sort -u /tmp/named | comm -23 - /tmp/own > /tmp/named.sorted
 cp /tmp/named.sorted /work/named.txt
+cp /tmp/elves /work/elves.txt
 owners_of usr/lib /tmp/named.sorted > /tmp/owners
 # The closure's packages that are in the snapshot (not one built from the
 # AUR), for pacman.
