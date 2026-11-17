@@ -3,7 +3,7 @@
 //! listed here. The application gets the proxy's socket as its session bus.
 //!
 //! Always allowed: owning its own name (org.example.App, needed by GTK and
-//! Qt), the parts of the desktop portal that ask the user or only open
+//! Qt) and its media player name (org.mpris.MediaPlayer2.app), the parts of the desktop portal that ask the user or only open
 //! something (opening links and files, settings like dark style, inhibiting
 //! sleep, screen sharing, printing, e-mail). With permissions: notifications,
 //! the camera portal. Everything else (other applications, GNOME Shell,
@@ -25,9 +25,16 @@ const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 
 /// The proxy's rules for an application.
 pub fn rules(app_id: &str, notifications: bool, camera: bool) -> Vec<String> {
+    // Its media player name too (MPRIS: media keys, the desktop's player
+    // controls), by the last part of its id like players name themselves:
+    // org.mpris.MediaPlayer2.vlc for org.xeeonos.arch.vlc. VLC takes the
+    // name failing to own it for another VLC already running, and quits.
+    let short = app_id.rsplit('.').next().unwrap_or(app_id).to_lowercase();
     let mut r = vec![
         format!("--own={app_id}"),
         format!("--own={app_id}.*"),
+        format!("--own=org.mpris.MediaPlayer2.{short}"),
+        format!("--own=org.mpris.MediaPlayer2.{short}.*"),
         // The files the file chooser gave it (GTK asks the document portal
         // for their paths, drag and drop uses it).
         "--talk=org.freedesktop.portal.Documents".to_string(),
@@ -194,6 +201,9 @@ mod tests {
     fn policy() {
         let r = rules("org.mozilla.firefox", false, false);
         assert!(r.contains(&"--own=org.mozilla.firefox".to_string()));
+        assert!(r.contains(&"--own=org.mpris.MediaPlayer2.firefox.*".to_string()));
+        let r = rules("org.xeeonos.arch.vlc", false, false);
+        assert!(r.contains(&"--own=org.mpris.MediaPlayer2.vlc".to_string()));
         assert!(!r.iter().any(|x| x.contains("Notification")));
         assert!(!r.iter().any(|x| x.contains("Camera")));
         assert!(!r.iter().any(|x| x.starts_with("--talk=org.gnome")));
