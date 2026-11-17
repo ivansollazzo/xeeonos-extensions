@@ -58,6 +58,11 @@ pub struct Manifest {
     /// namespaces (Chromium, Electron, WebKitGTK, Qt WebEngine). Decided by
     /// `xapp build` from the image's contents, never by the user.
     pub user_namespaces: bool,
+    /// What the application needs from the system to work at all, found in
+    /// its image by `xapp build` (e.g. "x11": an interface that opens only
+    /// on X11). Given without asking: they are not about the user's data.
+    /// The known ones are in xapp-permissions (CAPABILITIES).
+    pub capabilities: Vec<String>,
     /// Versions of the C libraries inside the image (glibc, libstdc++ of
     /// gcc-libs): the system's must be at least as new to lend its graphics
     /// drivers.
@@ -143,7 +148,7 @@ impl Manifest {
                     .collect()
             })
             .unwrap_or_default();
-        let permissions = obj
+        let mut permissions: Vec<Permission> = obj
             .get("permissions")
             .and_then(Value::as_array)
             .map(|a| {
@@ -156,6 +161,14 @@ impl Manifest {
                     .collect()
             })
             .unwrap_or_default();
+        // Files made before capabilities had X11 as a permission.
+        let mut capabilities = list(obj, "capabilities");
+        if permissions.iter().any(|p| p.id == "x11") {
+            permissions.retain(|p| p.id != "x11");
+            if !capabilities.iter().any(|c| c == "x11") {
+                capabilities.push("x11".into());
+            }
+        }
         let m = Manifest {
             format,
             app_id: text(obj, "app_id"),
@@ -175,6 +188,7 @@ impl Manifest {
                 .get("user_namespaces")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            capabilities,
             glibc: text(obj, "glibc"),
             libstdcxx: text(obj, "libstdcxx"),
             permissions,
@@ -223,6 +237,9 @@ impl Manifest {
         if self.signer.len() != 64 || !self.signer.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(err("manifest: signer is not an Ed25519 public key"));
         }
+        if self.capabilities.iter().any(|c| c.is_empty()) {
+            return Err(err("manifest: an empty capability"));
+        }
         for p in &self.permissions {
             if p.id.is_empty() || p.reason.trim().is_empty() {
                 return Err(err("manifest: every permission needs an id and a reason"));
@@ -256,6 +273,7 @@ impl Manifest {
             "host_contract": self.host_contract,
             "gpu": self.gpu.as_str(),
             "user_namespaces": self.user_namespaces,
+            "capabilities": self.capabilities,
             "glibc": self.glibc,
             "libstdcxx": self.libstdcxx,
             "permissions": permissions,
@@ -311,6 +329,7 @@ pub(crate) mod tests {
             host_contract: 1,
             gpu: Gpu::Host,
             user_namespaces: true,
+            capabilities: vec!["x11".into()],
             glibc: "2.42".into(),
             libstdcxx: "15.2.1".into(),
             permissions: vec![Permission {
@@ -342,6 +361,20 @@ pub(crate) mod tests {
         assert_eq!(parsed.name_for("de_DE.UTF-8"), "Hello");
         assert!(parsed.declares("documents").is_some());
         assert!(parsed.declares("camera").is_none());
+    }
+
+    #[test]
+    fn x11_permission_becomes_a_capability() {
+        let mut m = sample();
+        m.capabilities.clear();
+        m.permissions.push(Permission {
+            id: "x11".into(),
+            reason: "Old interface".into(),
+        });
+        let parsed = Manifest::parse(&m.to_json()).unwrap();
+        assert_eq!(parsed.capabilities, ["x11"]);
+        assert!(parsed.declares("x11").is_none());
+        assert!(parsed.declares("documents").is_some());
     }
 
     #[test]

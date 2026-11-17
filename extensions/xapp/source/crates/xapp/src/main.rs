@@ -12,7 +12,9 @@ use std::process::ExitCode;
 const HELP: &str = "\
 xapp: XeeonOS applications (.xapp)
 
-  xapp run [--yes] <file|app> [args...]   start an application (also what a double click does)
+  xapp run [--yes] [--trace] <file|app> [args...]
+                                          start an application (also what a double click does);
+                                          --trace: then tell what its sandbox refused
   xapp install [--yes] <file>             copy an application into ~/Applications
   xapp build <recipe> [--key <file>] [--output <file>] [--no-install]
                                           make a .xapp from a recipe, then install it
@@ -26,6 +28,8 @@ xapp: XeeonOS applications (.xapp)
   xapp remove <app> [--purge]             delete its file (its data stays; --purge: data too)
   xapp permissions <app> [<permission> yes|no|ask]
                                           show or change what an application may do
+  xapp doctor <app> [--reset]             offer what the last --trace run was refused;
+                                          --reset: forget what was added that way
   xapp logs <app> [-f]                    the application's messages (journal)
 
 --yes answers every question with its first choice (scripts).

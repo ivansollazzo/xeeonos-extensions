@@ -77,6 +77,9 @@ pub struct Context {
     pub audio: bool,
     pub camera: bool,
     pub x11: bool,
+    /// Without X11: a fake X server to note whether the application looks
+    /// for one (`xapp run --trace`).
+    pub x11_probe: Option<PathBuf>,
     /// Folders given (their real paths, bound at the same place).
     pub folders: Vec<PathBuf>,
     /// The filtered session bus, if any.
@@ -303,6 +306,9 @@ pub fn args(c: &Context) -> Args {
             a.ro_bind_try(Path::new(&auth), &format!("{run_user}/Xauthority"));
             a.setenv("XAUTHORITY", &format!("{run_user}/Xauthority"));
         }
+    } else if let Some(probe) = &c.x11_probe {
+        a.ro_bind(probe, "/tmp/.X11-unix/X0");
+        a.setenv("DISPLAY", ":0");
     }
 
     // Graphics.
@@ -430,6 +436,7 @@ mod tests {
             audio: false,
             camera: false,
             x11: false,
+            x11_probe: None,
             folders: Vec::new(),
             bus: Some(PathBuf::from("/nonexistent/bus")),
             gpu_binds: Vec::new(),

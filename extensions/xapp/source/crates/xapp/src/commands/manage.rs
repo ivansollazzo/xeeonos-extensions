@@ -3,10 +3,12 @@
 use std::fs;
 
 use xapp_core::paths;
+use xapp_core::ui::{self, Question};
 use xapp_core::util::{Result, err, run as run_program};
 use xapp_desktop::{registry, sync::files};
 use xapp_format::Container;
-use xapp_permissions::{self as perms, State};
+use xapp_permissions::{self as perms, State, overrides};
+use xapp_sandbox::trace::{self, Finding};
 use xapp_trust::{self as trust, Trust, keys};
 
 use super::{app_id_of, open_target};
@@ -142,6 +144,21 @@ pub fn info(args: &[String]) -> Result<u8> {
     if m.user_namespaces {
         println!("Sandbox:     makes its own inside (user namespaces)");
     }
+    for cap in &m.capabilities {
+        let label = perms::capability(cap).map_or("unknown to this xapp", |c| c.label);
+        println!("Needs:       {label}");
+    }
+    let extra = overrides::load(&m.app_id);
+    if !extra.is_empty() {
+        println!("Added by hand (xapp doctor):");
+        for (kind, value) in extra.entries() {
+            let what = overrides::KINDS
+                .iter()
+                .find(|(k, _)| *k == kind)
+                .map_or(kind, |(_, w)| w);
+            println!("  {what}: {value}");
+        }
+    }
     let age = xapp_core::date::parse(&m.snapshot).map(|d| xapp_core::date::today() - d);
     let old = match age {
         Some(days) if days > 365 => format!(
@@ -174,6 +191,146 @@ pub fn info(args: &[String]) -> Result<u8> {
             println!("  {:<14} {:<20} {label}: \"{}\"", p.id, s, p.reason);
         }
     }
+    Ok(0)
+}
+
+/// Names on the session bus that open much more than one application:
+/// the doctor warns before giving them.
+const SENSITIVE: &[(&str, &str)] = &[
+    ("org.freedesktop.secrets", "every password in your keyring"),
+    ("org.kde.kwalletd", "every password in your wallet"),
+    ("org.gnome.keyring", "every password in your keyring"),
+    ("org.freedesktop.systemd1", "your services"),
+    (
+        "org.freedesktop.Flatpak",
+        "running programs outside any sandbox",
+    ),
+    (
+        "org.freedesktop.impl.portal",
+        "the desktop portal's insides, without its questions",
+    ),
+    ("org.gnome.Shell", "your desktop"),
+    ("org.kde.KWin", "your windows and screen"),
+    ("org.kde.plasmashell", "your desktop"),
+    ("org.kde.klauncher", "starting programs outside any sandbox"),
+    ("org.freedesktop.ScreenSaver", "locking your screen"),
+];
+
+fn sensitive(name: &str) -> Option<&'static str> {
+    SENSITIVE
+        .iter()
+        .find(|(prefix, _)| name.starts_with(prefix))
+        .map(|(_, what)| *what)
+}
+
+/// `xapp doctor <app> [--reset]`: offer what the last traced run
+/// (`xapp run --trace`) was refused, one question each.
+pub fn doctor(args: &[String]) -> Result<u8> {
+    let Some(target) = args.first() else {
+        return Err(err("usage: xapp doctor <app> [--reset]"));
+    };
+    let c = open_target(target)?;
+    let m = &c.manifest;
+    let name = m.display_name().to_string();
+    if args.iter().any(|a| a == "--reset") {
+        overrides::reset(&m.app_id);
+        println!("{name}: what was added by hand is gone; it has only what its file says.");
+        return Ok(0);
+    }
+    let Some(report) = trace::load(&m.app_id) else {
+        println!(
+            "{name} was not traced yet. Start it with:\n  xapp run --trace {}",
+            m.app_id
+        );
+        return Ok(1);
+    };
+    println!(
+        "Last traced run of {name}: ended with code {} after {} s.",
+        report.code, report.seconds
+    );
+    let extra = overrides::load(&m.app_id);
+    let open: Vec<&Finding> = report
+        .findings
+        .iter()
+        .filter(|f| {
+            let (kind, value) = f.entry();
+            !extra.has(kind, value) && !(**f == Finding::X11 && perms::has_capability(m, "x11"))
+        })
+        .collect();
+    let known = matches!(trust::check(&c), Ok(Trust::Trusted | Trust::Approved));
+    let refused: Vec<String> = perms::all(m, known)
+        .into_iter()
+        .filter(|(p, s)| *s == State::No && perms::info(&p.id).is_some())
+        .map(|(p, _)| p.id.clone())
+        .collect();
+    if open.is_empty() && refused.is_empty() {
+        println!(
+            "The sandbox refused nothing it could give. Its own messages: xapp logs {}",
+            m.app_id
+        );
+        return Ok(0);
+    }
+    let mut questions = Vec::new();
+    for f in &open {
+        let mut text = format!("{name} {}.", f.describe());
+        let default_yes = match f {
+            Finding::Own(n) | Finding::Talk(n) | Finding::See(n) => match sensitive(n) {
+                Some(what) => {
+                    text.push_str(&format!("\n\nCareful: {n} gives access to {what}."));
+                    false
+                }
+                None => true,
+            },
+            Finding::X11 => {
+                text.push_str("\n\nIts windows are then less isolated from other X11 windows.");
+                true
+            }
+        };
+        text.push_str("\n\nUndo with: xapp doctor ");
+        text.push_str(&m.app_id);
+        text.push_str(" --reset");
+        let mut q = Question::yes_no(
+            &format!("{name}: allow?"),
+            &text,
+            "Allow",
+            "Don't allow",
+            default_yes,
+        );
+        if !default_yes {
+            // "Don't allow" first: what --yes answers.
+            q.choices.reverse();
+            q.default = 0;
+        }
+        questions.push(q);
+    }
+    for id in &refused {
+        let label = perms::info(id).map_or(id.as_str(), |i| i.label);
+        questions.push(Question::yes_no(
+            &format!("{name}: permission"),
+            &format!("{name} may not use: {label} (you said no before).\n\nAllow it now?"),
+            "Allow",
+            "Don't allow",
+            false,
+        ));
+    }
+    let Some(answers) = ui::ask(&questions) else {
+        return Err(err("no terminal to ask in (use --yes)"));
+    };
+    let mut changed = 0;
+    for (f, a) in open.iter().zip(&answers) {
+        if a == "yes" {
+            let (kind, value) = f.entry();
+            overrides::add(&m.app_id, kind, value)?;
+            changed += 1;
+        }
+    }
+    for (id, a) in refused.iter().zip(&answers[open.len()..]) {
+        if a == "yes" {
+            perms::set(&m.app_id, id, Some(true))?;
+            changed += 1;
+        }
+    }
+    println!("{name}: {changed} change(s). They apply from its next start.");
     Ok(0)
 }
 

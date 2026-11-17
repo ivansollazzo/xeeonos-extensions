@@ -19,12 +19,14 @@ use std::time::{Duration, Instant};
 
 use xapp_core::paths;
 use xapp_core::util::have;
+use xapp_permissions::overrides::Overrides;
 
 const PORTAL: &str = "org.freedesktop.portal.Desktop";
 const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
 
-/// The proxy's rules for an application.
-pub fn rules(app_id: &str, notifications: bool, camera: bool) -> Vec<String> {
+/// The proxy's rules for an application. `extra`: what the user added by
+/// hand (`xapp doctor`).
+pub fn rules(app_id: &str, notifications: bool, camera: bool, extra: &Overrides) -> Vec<String> {
     // Its media player name too (MPRIS: media keys, the desktop's player
     // controls), by the last part of its id like players name themselves:
     // org.mpris.MediaPlayer2.vlc for org.xeeonos.arch.vlc. VLC takes the
@@ -38,6 +40,8 @@ pub fn rules(app_id: &str, notifications: bool, camera: bool) -> Vec<String> {
         // The files the file chooser gave it (GTK asks the document portal
         // for their paths, drag and drop uses it).
         "--talk=org.freedesktop.portal.Documents".to_string(),
+        // Its icon in the tray (StatusNotifierItem: Qt, KDE, AppIndicator).
+        "--talk=org.kde.StatusNotifierWatcher".to_string(),
     ];
     let mut portal = vec![
         "org.freedesktop.DBus.Properties.*",
@@ -50,6 +54,16 @@ pub fn rules(app_id: &str, notifications: bool, camera: bool) -> Vec<String> {
         "org.freedesktop.portal.Email.*",
         "org.freedesktop.portal.Session.*",
         "org.freedesktop.portal.Request.*",
+        // Its own secret for its own keyring (not the user's keyring).
+        "org.freedesktop.portal.Secret.*",
+        // Asking the user for shortcuts, moving its files to the trash.
+        "org.freedesktop.portal.GlobalShortcuts.*",
+        "org.freedesktop.portal.Trash.*",
+        // What the system is like: network up, proxy, memory, power mode.
+        "org.freedesktop.portal.NetworkMonitor.*",
+        "org.freedesktop.portal.ProxyResolver.*",
+        "org.freedesktop.portal.MemoryMonitor.*",
+        "org.freedesktop.portal.PowerProfileMonitor.*",
     ];
     if notifications {
         portal.push("org.freedesktop.portal.Notification.*");
@@ -68,6 +82,11 @@ pub fn rules(app_id: &str, notifications: bool, camera: bool) -> Vec<String> {
     r.push(format!(
         "--broadcast={PORTAL}=org.freedesktop.portal.*@{PORTAL_PATH}/*"
     ));
+    for (kind, name) in extra.entries() {
+        if matches!(kind, "own" | "talk" | "see") {
+            r.push(format!("--{kind}={name}"));
+        }
+    }
     r
 }
 
@@ -167,21 +186,26 @@ pub fn start_document_portal() {
 
 /// Start the proxy for an application, its socket in `instance`. `None`:
 /// no session bus or no xdg-dbus-proxy (the application then has no bus).
-pub fn start(instance: &Path, rules: &[String]) -> Option<Proxy> {
+/// `log`: write every message and what the filter refused there
+/// (`xapp run --trace`).
+pub fn start(instance: &Path, rules: &[String], log: Option<&Path>) -> Option<Proxy> {
     let address = session_bus()?;
     if !have("xdg-dbus-proxy") || !have("bwrap") {
         return None;
     }
     let socket = instance.join("bus");
-    let child = Command::new("bwrap")
-        .args(proxy_sandbox(instance, &paths::runtime_dir()))
+    let mut cmd = Command::new("bwrap");
+    cmd.args(proxy_sandbox(instance, &paths::runtime_dir()))
         .arg(address)
         .arg(&socket)
         .arg("--filter")
         .args(rules)
-        .stdin(Stdio::null())
-        .spawn()
-        .ok()?;
+        .stdin(Stdio::null());
+    if let Some(log) = log {
+        let file = std::fs::File::create(log).ok()?;
+        cmd.arg("--log").stdout(file.try_clone().ok()?).stderr(file);
+    }
+    let child = cmd.spawn().ok()?;
     let proxy = Proxy { child, socket };
     let start = Instant::now();
     while !proxy.socket.exists() {
@@ -199,19 +223,33 @@ mod tests {
 
     #[test]
     fn policy() {
-        let r = rules("org.mozilla.firefox", false, false);
+        let none = Overrides::default();
+        let r = rules("org.mozilla.firefox", false, false, &none);
         assert!(r.contains(&"--own=org.mozilla.firefox".to_string()));
         assert!(r.contains(&"--own=org.mpris.MediaPlayer2.firefox.*".to_string()));
-        let r = rules("org.xeeonos.arch.vlc", false, false);
+        let r = rules("org.xeeonos.arch.vlc", false, false, &none);
         assert!(r.contains(&"--own=org.mpris.MediaPlayer2.vlc".to_string()));
         assert!(!r.iter().any(|x| x.contains("Notification")));
         assert!(!r.iter().any(|x| x.contains("Camera")));
         assert!(!r.iter().any(|x| x.starts_with("--talk=org.gnome")));
-        let r = rules("org.mozilla.firefox", true, true);
+        assert!(r.contains(&"--talk=org.kde.StatusNotifierWatcher".to_string()));
+        assert!(r.iter().any(|x| x.contains("portal.Secret")));
+        let r = rules("org.mozilla.firefox", true, true, &none);
         assert!(r.contains(&"--talk=org.freedesktop.Notifications".to_string()));
         assert!(r.iter().any(|x| x.contains("portal.Camera")));
         assert!(r.iter().any(|x| x.contains("portal.FileChooser")));
         assert!(r.contains(&"--talk=org.freedesktop.portal.Documents".to_string()));
+        // What the user added by hand.
+        let extra = Overrides {
+            own: vec!["org.example.Extra".into()],
+            talk: vec!["org.kde.kwalletd6".into()],
+            see: vec![],
+            capabilities: vec!["x11".into()],
+        };
+        let r = rules("org.mozilla.firefox", false, false, &extra);
+        assert!(r.contains(&"--own=org.example.Extra".to_string()));
+        assert!(r.contains(&"--talk=org.kde.kwalletd6".to_string()));
+        assert!(!r.iter().any(|x| x.contains("x11")));
     }
 
     #[test]

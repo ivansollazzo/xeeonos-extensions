@@ -28,6 +28,11 @@
 //! CEF, WebKitGTK and Qt WebEngine do. A recipe can still say
 //! `"user_namespaces": true|false`.
 //!
+//! The capabilities (manifest `capabilities`: what it needs from the system
+//! to work, given without asking) are found in the image too: "x11" for an
+//! interface that opens only on X11 (needs_x11). A recipe can add one with
+//! `"capabilities": ["x11"]`.
+//!
 //! `version` may be left out: it is then the version of the first package.
 //! `sources` are archives of the application's authors (official binaries):
 //! downloaded, checked against their SHA-256 and unpacked in their `to`
@@ -159,6 +164,67 @@ pub fn own_sandbox<'a>(
             .find(|(n, _)| *n == name)
             .map(|(_, what)| (f, *what))
     })
+}
+
+/// Signs, in the image's files, of an interface that opens only on X11:
+/// (file or files, why). The first that matches wins.
+const X11_ONLY: &[(&[&str], &[&str], &str)] = &[
+    // (all of these are there, none of these is there, why)
+    (
+        &["usr/lib/vlc/plugins/gui/libqt_plugin.so"],
+        &[],
+        "VLC 3: its Qt interface opens only on X11",
+    ),
+    (
+        &["usr/lib/vlc/plugins/gui/libskins2_plugin.so"],
+        &[],
+        "VLC 3: its skins interface opens only on X11",
+    ),
+    (
+        &["usr/lib/libgtk-x11-2.0.so.0"],
+        &[],
+        "GTK 2 draws only on X11",
+    ),
+    (
+        &["usr/lib/libQt5Gui.so.5"],
+        &["usr/lib/qt/plugins/platforms/libqwayland-generic.so"],
+        "Qt 5 without its Wayland plugin draws on X11",
+    ),
+    (
+        &["usr/lib/libQt6Gui.so.6"],
+        &["usr/lib/qt6/plugins/platforms/libqwayland-generic.so"],
+        "Qt 6 without its Wayland plugin draws on X11",
+    ),
+    (
+        &["libawt_xawt.so"],
+        &[],
+        "Java (AWT, Swing) draws only on X11",
+    ),
+    (
+        &["chrome_100_percent.pak"],
+        &[],
+        "Chromium or Electron: X11 unless told to use Wayland",
+    ),
+    (
+        &["usr/lib/libX11.so.6"],
+        &["usr/lib/libwayland-client.so.0"],
+        "uses X11 and has no Wayland library",
+    ),
+];
+
+/// Does the application need X11 to open its windows? Why, if so. A sign
+/// ending with a file name only (no "/") matches that name anywhere.
+pub fn needs_x11<'a>(files: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
+    let files: Vec<&str> = files.into_iter().collect();
+    let has = |sign: &str| {
+        files
+            .iter()
+            .any(|f| *f == sign || (!sign.contains('/') && f.rsplit('/').next() == Some(sign)))
+    };
+    X11_ONLY
+        .iter()
+        .find(|(all, none, _)| all.iter().all(|f| has(f)) && !none.iter().any(|f| has(f)))
+        .map(|(_, _, why)| *why)
 }
 
 /// Every file under a directory, as paths relative to it.
@@ -324,7 +390,8 @@ pub fn build(o: &Options) -> Result<PathBuf> {
         .flatten()
     {
         let id = text(p, "id");
-        if xapp_permissions::info(&id).is_none() {
+        // X11 was a permission once: now a capability (below).
+        if xapp_permissions::info(&id).is_none() && id != "x11" {
             return Err(err(format!(
                 "recipe: unknown permission \"{id}\" (known: {})",
                 xapp_permissions::known()
@@ -383,6 +450,26 @@ pub fn build(o: &Options) -> Result<PathBuf> {
             }
         );
     }
+    // Capabilities: from the recipe, then from the image.
+    let mut capabilities = list(&r, "capabilities");
+    for c in &capabilities {
+        if xapp_permissions::capability(c).is_none() {
+            return Err(err(format!("recipe: unknown capability \"{c}\"")));
+        }
+    }
+    let x11_permission = r
+        .get("permissions")
+        .and_then(Value::as_array)
+        .is_some_and(|a| a.iter().any(|p| text(p, "id") == "x11"));
+    if x11_permission && !capabilities.iter().any(|c| c == "x11") {
+        capabilities.push("x11".into());
+    }
+    if !capabilities.iter().any(|c| c == "x11")
+        && let Some(why) = needs_x11(files.iter().map(String::as_str))
+    {
+        println!("X11 windows given ({why})");
+        capabilities.push("x11".into());
+    }
     let info = read_kv(&out.join("info"));
     let info = |k: &str| {
         info.iter()
@@ -413,6 +500,7 @@ pub fn build(o: &Options) -> Result<PathBuf> {
         .and_then(Value::as_array)
         .map(|a| {
             a.iter()
+                .filter(|p| text(p, "id") != "x11")
                 .map(|p| Permission {
                     id: text(p, "id"),
                     reason: text(p, "reason"),
@@ -437,6 +525,7 @@ pub fn build(o: &Options) -> Result<PathBuf> {
             Gpu::Host
         },
         user_namespaces,
+        capabilities,
         glibc: info("glibc"),
         libstdcxx: info("libstdcxx"),
         permissions,
@@ -527,6 +616,44 @@ mod tests {
         assert!(own_sandbox(["usr/lib/webkitgtk-6.0/WebKitWebProcess"]).is_some());
         // A name, not a part of one.
         assert_eq!(own_sandbox(["usr/share/doc/chrome-sandbox.txt"]), None);
+    }
+
+    #[test]
+    fn finds_x11_only_interfaces() {
+        let vlc = [
+            "usr/bin/vlc",
+            "usr/lib/libX11.so.6",
+            "usr/lib/libwayland-client.so.0",
+            "usr/lib/vlc/plugins/gui/libqt_plugin.so",
+        ];
+        assert!(needs_x11(vlc).unwrap().contains("VLC"));
+        // GTK 3/4 and Qt with its Wayland plugin: Wayland.
+        let gtk = [
+            "usr/lib/libX11.so.6",
+            "usr/lib/libwayland-client.so.0",
+            "usr/lib/libgtk-4.so.1",
+        ];
+        assert_eq!(needs_x11(gtk), None);
+        let qt6 = [
+            "usr/lib/libX11.so.6",
+            "usr/lib/libwayland-client.so.0",
+            "usr/lib/libQt6Gui.so.6",
+            "usr/lib/qt6/plugins/platforms/libqwayland-generic.so",
+        ];
+        assert_eq!(needs_x11(qt6), None);
+        assert!(needs_x11(["usr/lib/libQt6Gui.so.6", "usr/lib/libwayland-client.so.0"]).is_some());
+        // A program with only X11.
+        assert!(needs_x11(["usr/bin/xterm", "usr/lib/libX11.so.6"]).is_some());
+        // Electron, anywhere.
+        assert!(
+            needs_x11([
+                "opt/App/chrome_100_percent.pak",
+                "usr/lib/libwayland-client.so.0"
+            ])
+            .is_some()
+        );
+        // Nothing graphical.
+        assert_eq!(needs_x11(["usr/bin/bash"]), None);
     }
 
     #[test]

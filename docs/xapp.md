@@ -117,6 +117,7 @@ successive di xapp aggiungono funzioni senza cambiare il formato.
 | `gpu` | `host` (driver del sistema, predefinito) o `bundled` (driver propri) |
 | `user_namespaces` | l'app fa una sandbox propria dentro la nostra (Chromium, Electron, WebKitGTK, Qt WebEngine): deciso da `xapp build`, sezione 8 |
 | `glibc`, `libstdcxx` | versioni di glibc e gcc-libs dell'immagine |
+| `capabilities` | quello che serve all'app per funzionare (oggi solo `x11`): deciso da `xapp build`, mai chiesto, sezione 10 |
 | `permissions` | i permessi che l'app **può** chiedere, ognuno con il motivo: `[{"id": "camera", "reason": "Per le videochiamate"}]` |
 | `mime_types` | tipi di file che apre |
 | `categories` | categorie del menu |
@@ -268,19 +269,27 @@ Altre protezioni:
   sua sandbox, sempre dentro la nostra.
 - `--cap-drop ALL`, `--die-with-parent`.
 - **Bus di sessione filtrato** con `xdg-dbus-proxy`, politica "nega tutto".
-  Passano solo il proprio nome, il portal del desktop per le parti che
-  chiedono all'utente o aprono soltanto (link e file, selettore dei file,
+  Passano solo il proprio nome e il suo nome di lettore multimediale
+  (`org.mpris.MediaPlayer2.<ultima parte dell'id>`: tasti multimediali e
+  controlli del desktop; VLC senza si chiude credendo di essere già
+  aperto), l'icona nella barra di sistema (`org.kde.StatusNotifierWatcher`),
+  il portal del desktop per le parti che chiedono all'utente, aprono
+  soltanto o dicono com'è il sistema (link e file, selettore dei file,
   impostazioni come il tema scuro, inibizione della sospensione,
-  condivisione dello schermo, stampa, e-mail), il document portal, le
-  notifiche e il portal Camera (con i rispettivi permessi). Altre app,
-  GNOME Shell, i segreti e il file manager non esistono per l'app.
+  condivisione dello schermo, stampa, e-mail, il proprio segreto, scorciatoie
+  globali, cestino, stato della rete, proxy, memoria, risparmio energetico),
+  il document portal, le notifiche e il portal Camera (con i rispettivi
+  permessi), più i nomi aggiunti a mano con `xapp doctor` (sezione 10).
+  Altre app, GNOME Shell, il portachiavi dell'utente e il file manager non
+  esistono per l'app.
 - **Impostazioni di GNOME**: dconf non c'è nella sandbox, quindi GTK le
   legge dal portal (`GTK_USE_PORTAL=1` per GTK 3, `GDK_DEBUG=portals` per
   GTK 4): pulsanti della finestra (minimizza, massimizza, chiudi), tema,
   caratteri, stile scuro. Così passa anche il selettore dei file.
 - Ambiente ripulito (`--clearenv`): passano solo lingua, terminale, desktop
   e fuso orario.
-- **Niente X11** di default (permesso `x11`).
+- **Niente X11**, tranne per le app che hanno la capacità `x11`
+  (sezione 10).
 
 **File aperti**: un file passato all'app (doppio clic su un documento, o
 argomento) viene prestato da solo in `/run/xapp/docs/<n>/<nome>`, anche se
@@ -291,7 +300,7 @@ percorso.
 Cosa la sandbox **non** protegge (detto chiaramente): la GPU e la tastiera
 sono condivise con il resto della sessione. Su GNOME il socket Wayland è
 quello normale (Mutter non dà comunque protocolli privilegiati ai client
-normali). Un'app con permesso `x11` può vedere le altre finestre X11.
+normali). Un'app con la capacità `x11` può vedere le altre finestre X11.
 
 ## 8bis. Il portal del desktop: il tipo di applicazione "xapp"
 
@@ -372,7 +381,6 @@ ottenere.
 | `documents`, `downloads`, `pictures`, `music`, `videos`, `desktop` | la cartella utente corrispondente (nomi tradotti da `~/.config/user-dirs.dirs`) | chiesto |
 | `audio` | suono e microfono (in v1 insieme: il socket PipeWire non li separa bene) | chiesto |
 | `camera` | fotocamera | chiesto |
-| `x11` | finestre X11 (programmi vecchi, isolamento più debole) | chiesto |
 | `autostart` | avvio al login | chiesto |
 
 "Di default sì" vale per le app di un autore fidato o approvato, se l'utente
@@ -382,6 +390,52 @@ cambiano con `xapp permissions <app> <permesso> yes|no|ask`. Quello che non
 è permesso **non esiste** nella sandbox: una cartella negata non c'è
 proprio. Se all'avvio non c'è nessuno a cui chiedere, i permessi in sospeso
 non vengono dati per quella volta (e vengono richiesti la volta dopo).
+
+### Due livelli: capacità e permessi
+
+Non tutto quello che manca a un'app è una questione di privacy. Per non
+dover seguire app per app cosa le serve, le cose sono divise in due:
+
+- **Capacità**: quello che serve all'app per funzionare, senza dati
+  dell'utente in gioco. Le decide `xapp build` guardando l'immagine, stanno
+  nel campo `capabilities` del manifest firmato e **non vengono mai
+  chieste**. `xapp info` le mostra ("Serve: ...").
+- **Permessi**: quello che tocca la privacy (cartelle, fotocamera,
+  microfono, ...), dichiarato con un motivo e chiesto all'utente, come
+  sopra.
+
+| Capacità | Cosa dà | Come la decide `xapp build` |
+|---|---|---|
+| `x11` | finestre X11 (isolamento più debole dalle altre finestre X11) | interfacce che si aprono solo su X11: l'interfaccia Qt di VLC 3, GTK 2, Qt 5/6 senza il plugin Wayland, Java AWT/Swing, Electron/Chromium, libX11 senza libwayland-client |
+
+La ricetta può aggiungerne con `"capabilities": ["x11"]`; un permesso `x11`
+scritto in una ricetta o in un manifest vecchio diventa la capacità `x11`.
+
+### Quando manca qualcosa: xapp run --trace e xapp doctor
+
+Se un'app non parte o non fa qualcosa, non si indovina:
+
+```
+xapp run --trace <app>     avvia e nota cosa la sandbox rifiuta
+xapp doctor <app>          propone di permettere quello che è stato rifiutato
+```
+
+Con `--trace` il filtro del bus scrive ogni messaggio (`xdg-dbus-proxy
+--log`) e, se l'app non ha X11, al suo posto c'è un finto server X11
+(`DISPLAY=:0`) che conta chi bussa. Alla fine il resoconto (codice di
+uscita, durata, nomi del bus rifiutati, X11) va in
+`~/.local/state/xapps/trace/<id>` e viene stampato.
+
+`xapp doctor` chiede, una cosa per volta, se permettere ciascuna di quelle
+cose (e i permessi dichiarati che l'utente aveva negato). I nomi delicati
+(portachiavi, systemd, GNOME Shell, KWin, Flatpak, le implementazioni dei
+portal, ...) sono proposti con "no" come risposta predefinita, e `--yes`
+non li permette mai. Le aggiunte stanno in
+`~/.local/state/xapps/overrides/<id>` (righe `own=`, `talk=`, `see=`,
+`capability=`), sono dell'utente e non dell'autore, valgono solo per quella
+app e si tolgono con `xapp doctor <app> --reset`. `xapp info` le mostra.
+Un nome del bus valido è un nome ben formato, mai `org.freedesktop.DBus`
+né un nome unico (`:1.42`).
 
 ## 11. La grafica (GPU)
 
@@ -558,7 +612,9 @@ compare: lo decide `xapp build` (sezione 8). Prossima sorgente: AUR
 ## 15. Il comando xapp
 
 ```
-xapp run [--yes] <file|app> [argomenti]   avvia (anche quello che fa il doppio clic)
+xapp run [--yes] [--trace] <file|app> [argomenti]
+                                          avvia (anche quello che fa il doppio clic);
+                                          --trace: nota cosa la sandbox rifiuta
 xapp install [--yes] <file>               copia in ~/Applications
 xapp build <ricetta> [--key <file>] [--output <file>] [--no-install] [--root <dir>]
 xapp create --arch <pacchetto> | --url <https://...> [--exec <programma>] [--icon <immagine>]
@@ -569,6 +625,7 @@ xapp info <app|file>                      cos'è, autore, snapshot, permessi
 xapp verify <file>                        firma e integrità, senza aprire
 xapp remove <app> [--purge]               toglie il file (i dati restano; --purge: anche quelli)
 xapp permissions <app> [<permesso> yes|no|ask]
+xapp doctor <app> [--reset]               permette quello che --trace ha visto rifiutare
 xapp logs <app> [-f]                      i messaggi dell'app (journal)
 ```
 
@@ -588,8 +645,8 @@ dentro xctl, e non richiede sudo.
 | `xapp-core` | errori, programmi esterni, percorsi, dialoghi (`ui.rs`), versioni, date |
 | `xapp-format` | il file: manifest e contenitore (immagine + trailer) |
 | `xapp-trust` | chiavi Ed25519, firma, autori fidati, pinning, revoca |
-| `xapp-permissions` | catalogo dei permessi e scelte dell'utente |
-| `xapp-sandbox` | montaggio, seccomp, filtro D-Bus, GPU, riga di comando di bubblewrap, avvio nello scope |
+| `xapp-permissions` | catalogo dei permessi e delle capacità, scelte dell'utente, aggiunte di `xapp doctor` (`overrides.rs`) |
+| `xapp-sandbox` | montaggio, seccomp, filtro D-Bus, GPU, riga di comando di bubblewrap, avvio nello scope, `--trace` (`trace.rs`) |
 | `xapp-desktop` | registro, voci di menu, tipo di file, `xapp sync` |
 | `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`, `create-url.sh`) |
 | `xapp` | il programma: legge la riga di comando |
@@ -608,7 +665,9 @@ e per `xapp build` `podman` o `docker`.
 - Unitari (`cargo test` in `extensions/xapp/build.sh`): file
   `.xapp` scritto e riletto, un byte cambiato rifiutato, manifest,
   firma, filtro seccomp eseguito da un piccolo interprete BPF (con e senza
-  sandbox propria), riconoscimento di Chromium, Electron e WebKitGTK, regole del bus, sandbox del proxy, `/.xapp-info`,
+  sandbox propria), riconoscimento di Chromium, Electron e WebKitGTK, delle
+  interfacce solo X11, regole del bus (con le aggiunte a mano), lettura del
+  log del proxy, resoconto di `--trace`, finto server X11, sandbox del proxy, `/.xapp-info`,
   prestito dei file, mimeapps.list, versioni e date.
 - In VM (`extensions/xapp/test`, eseguito da `tools/boot-check.sh` sulla
   versione di XeeonOS pubblicata): un'app di prova costruita nella VM con

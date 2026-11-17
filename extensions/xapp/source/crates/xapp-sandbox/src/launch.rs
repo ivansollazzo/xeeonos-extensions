@@ -12,6 +12,7 @@ use xapp_core::util::{Result, err, gid, have, uid};
 use xapp_format::{Container, Gpu};
 use xapp_permissions as perms;
 
+use crate::trace::{self, Finding, Report, X11Probe};
 use crate::{bwrap, dbus, gpu, mount, seccomp};
 
 /// What to start.
@@ -21,6 +22,9 @@ pub struct Launch<'a> {
     pub known_author: bool,
     /// Arguments from the user (files, links), after the manifest's own.
     pub args: Vec<String>,
+    /// Note what the sandbox refuses (`xapp run --trace`): the report is
+    /// saved for `xapp doctor` (trace::load).
+    pub trace: bool,
 }
 
 /// The instance's directory, removed at the end.
@@ -172,9 +176,12 @@ pub fn run(l: &Launch) -> Result<i32> {
 
     let (args, docs) = lend_files(&l.args, &folders);
     dbus::start_document_portal();
+    let extra = perms::overrides::load(&m.app_id);
+    let dbus_log = l.trace.then(|| instance.0.join("dbus.log"));
     let proxy = dbus::start(
         &instance.0,
-        &dbus::rules(&m.app_id, given("notifications"), given("camera")),
+        &dbus::rules(&m.app_id, given("notifications"), given("camera"), &extra),
+        dbus_log.as_deref(),
     );
     if proxy.is_none() {
         eprintln!(
@@ -183,6 +190,12 @@ pub fn run(l: &Launch) -> Result<i32> {
         );
     }
 
+    let x11 = perms::has_capability(m, "x11");
+    let probe = if l.trace && !x11 {
+        X11Probe::start(&instance.0)
+    } else {
+        None
+    };
     let ctx = bwrap::Context {
         image: image.dir.clone(),
         instance: instance.0.clone(),
@@ -195,7 +208,8 @@ pub fn run(l: &Launch) -> Result<i32> {
         gpu: gpu_given,
         audio: given("audio"),
         camera: given("camera"),
-        x11: given("x11"),
+        x11,
+        x11_probe: probe.as_ref().map(|p| p.socket.clone()),
         folders,
         bus: proxy.as_ref().map(|p| p.socket.clone()),
         gpu_binds,
@@ -266,14 +280,33 @@ pub fn run(l: &Launch) -> Result<i32> {
     if std::env::var_os("XAPP_DEBUG").is_some() {
         eprintln!("xapp: {}", cmd.join(" "));
     }
+    let started = std::time::Instant::now();
     let status = Command::new(&cmd[0])
         .args(&cmd[1..])
         .status()
         .map_err(|e| err(format!("cannot start {}: {e}", cmd[0])))?;
+    let code = status.code().unwrap_or(1);
     drop(proxy);
+    if l.trace {
+        let mut findings = Vec::new();
+        if probe.as_ref().is_some_and(X11Probe::knocked) {
+            findings.push(Finding::X11);
+        }
+        if let Some(log) = &dbus_log {
+            findings.extend(trace::parse_dbus_log(
+                &fs::read_to_string(log).unwrap_or_default(),
+            ));
+        }
+        trace::save(&Report {
+            app_id: m.app_id.clone(),
+            code,
+            seconds: started.elapsed().as_secs(),
+            findings,
+        })?;
+    }
     drop(image);
     drop(instance);
-    Ok(status.code().unwrap_or(1))
+    Ok(code)
 }
 
 #[cfg(test)]
