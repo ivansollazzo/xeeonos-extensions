@@ -94,10 +94,12 @@ q > "$out/packages.txt"
 {
     echo "glibc=$(q glibc | cut -d' ' -f2)"
     echo "libstdcxx=$(q gcc-libs 2>/dev/null | cut -d' ' -f2)"
-    if [[ $# -gt 0 ]]; then
-        echo "main=$(q "$1" | cut -d' ' -f2)"
-    elif [[ ${#aur_names[@]} -gt 0 ]]; then
+    # The application: its AUR package, if it has one (the snapshot's
+    # packages may be only for its icon or its libraries).
+    if [[ ${#aur_names[@]} -gt 0 ]]; then
         echo "main=$(q "${aur_names[0]}" | cut -d' ' -f2)"
+    elif [[ $# -gt 0 ]]; then
+        echo "main=$(q "$1" | cut -d' ' -f2)"
     fi
 } > "$out/info"
 

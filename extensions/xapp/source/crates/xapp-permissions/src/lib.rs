@@ -223,7 +223,8 @@ fn valid_folder(path: &str) -> bool {
     let ok_chars =
         !path.contains("..") && !path.contains(':') && !path.contains('\n') && !path.ends_with('/');
     if let Some(rest) = path.strip_prefix("~/") {
-        return ok_chars && !rest.is_empty() && !rest.starts_with('.');
+        // Not "~//home/x": joined to the home, an absolute rest replaces it.
+        return ok_chars && !rest.is_empty() && !rest.starts_with(['.', '/']);
     }
     ok_chars
         && ["/mnt/", "/media/", "/run/media/"]
@@ -507,6 +508,7 @@ mod tests {
             "folder:~",
             "folder:~/",
             "folder:~/.ssh",
+            "folder:~//home/alice/.ssh",
             "folder:/",
             "folder:/etc",
             "folder:/mnt/../etc",
