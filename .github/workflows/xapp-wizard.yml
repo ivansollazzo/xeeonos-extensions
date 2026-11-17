@@ -61,16 +61,21 @@ jobs:
                  + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
           open(sys.argv[1], "wb").write(png)
           EOF
-          "$XAPP" --yes create --dir "$app" --snapshot "$SNAPSHOT" --output "$OUT/dir-recipe" --no-build
+          "$XAPP" --yes create --dir "$app" --snapshot "$SNAPSHOT" --output "$OUT/dir-recipe" --no-build \
+              --permission "camera:Per le videochiamate" --permission "folder:~/Giochi:ro=Per i salvataggi"
           cat "$OUT/dir-recipe/recipe.json"
           r=$OUT/dir-recipe/recipe.json
           jq -e --arg d "$app" '.sources[0].dir == $d and .sources[0].to == "/opt/mytool"' "$r"
           jq -e '.exec[0] == "/opt/mytool/bin/mytool" and .icon == "/opt/mytool/share/mytool.png"' "$r"
           jq -e '.packages | length > 0' "$r"
+          # Permissions: the ones given on the command line, with their reasons.
+          jq -e '.permissions | any(.id == "camera" and .reason == "Per le videochiamate")' "$r"
+          jq -e '.permissions | any(.id == "folder:~/Giochi:ro" and .reason == "Per i salvataggi")' "$r"
           "$XAPP" build "$OUT/dir-recipe" --key "$OUT/ci.key" --output "$OUT/dir.xapp" \
               --work "$RUNNER_TEMP/work-dir" --no-install
           "$XAPP" verify "$OUT/dir.xapp"
-          "$XAPP" info "$OUT/dir.xapp"
+          "$XAPP" info "$OUT/dir.xapp" | tee "$RUNNER_TEMP/dir-info.txt"
+          grep -q "The folder ~/Giochi (read only)" "$RUNNER_TEMP/dir-info.txt"
 
       - name: --aur without reading the PKGBUILD is refused
         run: |

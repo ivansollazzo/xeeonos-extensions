@@ -15,6 +15,9 @@
 #                        loaded while running (dlopen: sound, video, ...)
 #   /work/missing.txt    libraries no package of the snapshot has
 #   /work/closure.txt    every package the found ones bring
+#   /work/hints.txt      "permission what": what its programs name that a
+#                        permission gives (camera /dev/video, audio
+#                        libpulse.so.0), for the wizard's proposals
 #   /work/tree/          its menu entries and images (copied)
 #
 # `xapp create --dir` uses it too, for a directory of the user's (mounted
@@ -28,7 +31,7 @@ snapshot=${1:?snapshot missing}
 url=${2:?url missing}
 cd /work
 rm -rf download x tree url.txt sha256.txt top.txt files.txt programs.txt \
-    needs.txt loads.txt missing.txt closure.txt
+    needs.txt loads.txt missing.txt closure.txt hints.txt
 mkdir -p x tree
 
 pacman-key --init >/dev/null 2>&1
@@ -65,6 +68,7 @@ root=$base/$top
 : > programs.txt
 : > /tmp/needed
 : > /tmp/named
+: > /tmp/hints
 while IFS= read -r f; do
     p=$root/$f
     [[ -f $p && ! -L $p ]] || continue
@@ -74,7 +78,18 @@ while IFS= read -r f; do
         echo "$f" >> programs.txt
     fi
     strings -a "$p" | grep -oE '^lib[A-Za-z0-9_+-]+\.so(\.[0-9]+)*$' >> /tmp/named || true
+    # What a permission gives, named in the program (even one that brings
+    # everything itself: Electron opens the camera and loads the sound
+    # library on its own).
+    if grep -aqsF '/dev/video' "$p"; then echo "camera /dev/video" >> /tmp/hints; fi
+    if grep -aqsF 'org.freedesktop.portal.Camera' "$p"; then
+        echo "camera the camera portal" >> /tmp/hints
+    fi
+    for lib in libpulse.so libpipewire-0.3.so libasound.so; do
+        if grep -aqsF "$lib" "$p"; then echo "audio $lib" >> /tmp/hints; fi
+    done
 done < files.txt
+sort -u /tmp/hints > hints.txt 2>/dev/null || : > hints.txt
 # What the application has itself is not needed from a package.
 sed 's|.*/||' files.txt | sort -u > /tmp/own
 sort -u /tmp/needed | comm -23 - /tmp/own > /tmp/needed.sorted

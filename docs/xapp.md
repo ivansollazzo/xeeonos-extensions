@@ -383,6 +383,26 @@ ottenere.
 | `camera` | fotocamera | chiesto |
 | `autostart` | avvio al login | chiesto |
 
+**Permessi personalizzati**, come quelli di Flatpak, per quello che il
+catalogo non ha:
+
+| Permesso | Cosa dà |
+|---|---|
+| `dbus-talk:<nome>` | parlare con un nome del bus di sessione (come `--talk-name`) |
+| `dbus-own:<nome>` | prendere un nome del bus (come `--own-name`) |
+| `folder:~/<cartella>[:ro]`, `folder:/mnt/...` | una cartella precisa, anche in sola lettura (nella home, ma non la home intera né una cartella nascosta come `~/.ssh`; oppure sotto `/mnt`, `/media`, `/run/media`) |
+| `device:input` | controller e joystick (`/dev/input`, `hidraw`, `uinput`) |
+| `device:all` | tutti i dispositivi di `/dev` |
+
+A differenza di Flatpak non vengono dati in silenzio: hanno il loro motivo
+e sono **chiesti all'utente** come gli altri, mai dati di default. Quelli
+delicati (portachiavi, systemd, Shell, KWin, ..., e `device:all`) sono
+segnati "attenzione" e `--yes` non li dà.
+
+**Alla prima apertura** i permessi in sospeso sono chiesti tutti insieme,
+in una lista a caselle (come tasksel): niente spuntato, l'utente spunta
+quello che permette (spazio) e conferma.
+
 "Di default sì" vale per le app di un autore fidato o approvato, se l'utente
 non ha detto di no. Le scelte stanno in
 `~/.local/state/xapps/permissions/<id>` (righe `<permesso>=yes|no`) e si
@@ -422,12 +442,17 @@ xapp doctor <app>          propone di permettere quello che è stato rifiutato
 
 Con `--trace` il filtro del bus scrive ogni messaggio (`xdg-dbus-proxy
 --log`) e, se l'app non ha X11, al suo posto c'è un finto server X11
-(`DISPLAY=:0`) che conta chi bussa. Alla fine il resoconto (codice di
-uscita, durata, nomi del bus rifiutati, X11) va in
+(`DISPLAY=:0`) che conta chi bussa. Lo stesso per il suono: senza il
+permesso `audio`, un finto PipeWire e un finto PulseAudio. Le chiamate
+rifiutate al portal Camera o alle notifiche contano come "voleva la
+fotocamera" o "voleva le notifiche". Alla fine il resoconto (codice di
+uscita, durata, nomi del bus rifiutati, X11, permessi voluti) va in
 `~/.local/state/xapps/trace/<id>` e viene stampato.
 
 `xapp doctor` chiede, una cosa per volta, se permettere ciascuna di quelle
-cose (e i permessi dichiarati che l'utente aveva negato). I nomi delicati
+cose (e i permessi dichiarati che l'utente aveva negato). Un permesso
+voluto ma non dichiarato nel file non si può dare: doctor dice di
+aggiungerlo alla ricetta e ricostruire. I nomi delicati
 (portachiavi, systemd, GNOME Shell, KWin, Flatpak, le implementazioni dei
 portal, ...) sono proposti con "no" come risposta predefinita, e `--yes`
 non li permette mai. Le aggiunte stanno in
@@ -582,13 +607,26 @@ Con `--arch`:
    file e classe della finestra; l'id è il nome
    del `.desktop` se è già in stile reverse-DNS, altrimenti
    `org.xeeonos.arch.<pacchetto>` (`--id` per sceglierlo);
-3. **propone i permessi**, uno per domanda, con il motivo: guarda le
-   librerie che il pacchetto si porta dietro (curl, libsoup, nss, WebKit →
-   rete; Mesa, Vulkan, GTK4, Qt → GPU; libnotify, libadwaita → notifiche;
-   PipeWire, PulseAudio, ALSA, GStreamer → audio; libcamera, v4l →
-   fotocamera), le categorie (browser → Download) e i tipi di file che
-   apre (immagini → Immagini, PDF e testo → Documenti, ...). L'autore
-   conferma o toglie ognuno;
+3. **i permessi**, in una lista a caselle come tasksel: tutti quelli del
+   catalogo, con già spuntati (e il perché accanto) quelli che
+   probabilmente servono. Li deduce dalle librerie che il pacchetto si
+   porta dietro (curl, libsoup, nss, WebKit → rete; Mesa, Vulkan, GTK4,
+   Qt → GPU; libnotify, libadwaita → notifiche; PipeWire, PulseAudio,
+   ALSA, GStreamer → audio; libcamera, v4l → fotocamera); da un **motore
+   web** dentro l'app (Electron, Chromium, CEF, WebKit, Qt WebEngine,
+   Firefox: le pagine possono fare chiamate → audio, fotocamera,
+   notifiche), anche quando si porta tutto da sé come Discord; dalle
+   categorie (chat e chiamate → audio, fotocamera, notifiche; audio e
+   video → audio; browser → Download); dai tipi di file che apre
+   (immagini → Immagini, PDF e testo → Documenti, ...); e, per archivi e
+   cartelle, da quello che i programmi nominano (`/dev/video`, il portal
+   Camera → fotocamera; `libpulse.so`, `libpipewire`, `libasound.so` →
+   audio). L'autore spunta o toglie quello che vuole. L'ultima voce,
+   **"Add a custom permission…"**, chiede tipo, nome e motivo di un
+   permesso personalizzato (sezione 10) e lo aggiunge spuntato. Da riga di
+   comando: `--permission camera`, `--permission "camera:Per le
+   videochiamate"`, `--permission "folder:~/Giochi:ro=Per i salvataggi"`
+   (ripetibile; quelli personalizzati vogliono il motivo dopo `=`);
 4. scrive `<pacchetto>/recipe.json` (`--output` per un'altra cartella);
 5. chiede se costruire subito l'app e metterla in `~/Applications`
    (`--no-build` per fermarsi alla ricetta).
@@ -655,7 +693,7 @@ xapp install [--yes] <file>               copia in ~/Applications
 xapp build <ricetta> [--key <file>] [--output <file>] [--no-install] [--root <dir>]
 xapp create --arch <pacchetto> | --aur <pacchetto> | --url <https://...> | --dir <cartella>
             [--exec <programma>] [--icon <immagine>] [--pkgbuild-ok]
-            [--snapshot AAAA/MM/GG] [--id <id>] [--output <dir>] [--no-build]
+            [--permission <id>[=<motivo>]]... [--snapshot AAAA/MM/GG] [--id <id>] [--output <dir>] [--no-build]
                                           wizard: ricetta da un pacchetto Arch o AUR, da un
                                           archivio o da una cartella, poi build
 xapp list                                 le applicazioni di ~/Applications

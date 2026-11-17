@@ -72,6 +72,8 @@ pub struct Options {
     /// `--aur`: build the PKGBUILD without asking (scripts that read it
     /// some other way).
     pub pkgbuild_ok: bool,
+    /// `--permission <id>[=<reason>]`: ticked in the list from the start.
+    pub permissions: Vec<String>,
 }
 
 /// What a .desktop file says (its [Desktop Entry] group).
@@ -287,8 +289,17 @@ pub struct Proposal {
 }
 
 /// The permissions an application probably needs, from the packages it
-/// brings (`closure`), its categories and the file types it opens.
-pub fn propose(closure: &[String], categories: &[String], mime: &[String]) -> Vec<Proposal> {
+/// brings (`closure`), its categories, the file types it opens, its own
+/// files (a web engine inside: Electron, Chromium, CEF, WebKit, Qt
+/// WebEngine, Firefox) and what its programs name (`hints`, from
+/// create-url.sh: "camera /dev/video", "audio libpulse.so.0").
+pub fn propose(
+    closure: &[String],
+    categories: &[String],
+    mime: &[String],
+    files: &[String],
+    hints: &[String],
+) -> Vec<Proposal> {
     let has = |names: &[&str]| -> Option<String> {
         closure
             .iter()
@@ -304,13 +315,15 @@ pub fn propose(closure: &[String], categories: &[String], mime: &[String]) -> Ve
         mime.iter()
             .any(|m| prefixes.iter().any(|p| m.starts_with(p)))
     };
-    let mut out = Vec::new();
+    let mut out: Vec<Proposal> = Vec::new();
     let mut add = |id: &'static str, reason: &str, because: String| {
-        out.push(Proposal {
-            id,
-            reason: reason.to_string(),
-            because,
-        })
+        if !out.iter().any(|p| p.id == id) {
+            out.push(Proposal {
+                id,
+                reason: reason.to_string(),
+                because,
+            })
+        }
     };
     let net = has(&[
         "curl",
@@ -398,7 +411,266 @@ pub fn propose(closure: &[String], categories: &[String], mime: &[String]) -> Ve
             "downloads files".into(),
         );
     }
+    // A web engine inside: its pages can make audio and video calls
+    // (WebRTC), whatever the packages say (Electron brings its own).
+    let engine = crate::own_sandbox(files.iter().map(String::as_str))
+        .map(|(_, what)| what.to_string())
+        .or_else(|| {
+            files
+                .iter()
+                .any(|f| f.ends_with("/libxul.so") || f == "libxul.so")
+                .then(|| "Firefox's engine".to_string())
+        })
+        .or_else(|| {
+            has(&[
+                "electron*",
+                "qt6-webengine",
+                "qt5-webengine",
+                "webkit2gtk*",
+                "webkitgtk*",
+                "cef*",
+            ])
+        });
+    if let Some(e) = &engine {
+        let because = format!("a web engine inside ({e}): its pages can make calls");
+        add("audio", "For audio and video calls", because.clone());
+        add("camera", "For video calls", because.clone());
+        add("notifications", "To show notifications", because);
+    }
+    if cat("InstantMessaging") || cat("Chat") || cat("VideoConference") || cat("Telephony") {
+        add("audio", "For calls", "a chat or calls application".into());
+        add(
+            "camera",
+            "For video calls",
+            "a chat or calls application".into(),
+        );
+        add(
+            "notifications",
+            "To tell you about new messages",
+            "a chat application".into(),
+        );
+    }
+    if cat("Audio") || cat("Music") || cat("Player") || cat("Recorder") || cat("Video") {
+        add(
+            "audio",
+            "To play sound",
+            "a sound or video application".into(),
+        );
+    }
+    for h in hints {
+        let (id, why) = h.split_once(' ').unwrap_or((h.as_str(), ""));
+        match id {
+            "audio" => add("audio", "To play sound", format!("its programs name {why}")),
+            "camera" => add(
+                "camera",
+                "To use the camera",
+                format!("its programs name {why}"),
+            ),
+            _ => {}
+        }
+    }
     out
+}
+
+/// The reason shown to the user for a permission the author ticks without
+/// a proposal.
+pub fn default_reason(id: &str) -> String {
+    match id {
+        "network" => "To connect to the internet",
+        "gpu" => "To draw its windows smoothly",
+        "notifications" => "To show notifications",
+        "documents" => "To open and save your documents",
+        "downloads" => "To save the files you download",
+        "pictures" => "To open and save your pictures",
+        "music" => "To open your music",
+        "videos" => "To open your videos",
+        "desktop" => "To open the files on your desktop",
+        "audio" => "To play sound and use the microphone",
+        "camera" => "To use the camera",
+        "autostart" => "To start when you log in",
+        _ => "",
+    }
+    .to_string()
+}
+
+/// `--permission <id>[=<reason>]` (or `<catalog id>:<reason>`): the id
+/// and the reason (empty: the default one).
+pub fn parse_permission(arg: &str) -> Result<(String, String)> {
+    let (id, reason) = match arg.split_once('=') {
+        Some((id, r)) => (id.to_string(), r.to_string()),
+        None => match arg.split_once(':') {
+            Some((id, r)) if xapp_permissions::info(id).is_some() => {
+                (id.to_string(), r.to_string())
+            }
+            _ => (arg.to_string(), String::new()),
+        },
+    };
+    let id = id.trim().to_string();
+    if !xapp_permissions::valid(&id) {
+        return Err(err(format!(
+            "unknown permission \"{id}\" (known: {})",
+            xapp_permissions::known()
+        )));
+    }
+    let reason = if reason.trim().is_empty() {
+        default_reason(&id)
+    } else {
+        reason.trim().to_string()
+    };
+    if reason.is_empty() {
+        return Err(err(format!(
+            "the permission {id} needs a reason for the user: --permission '{id}=<reason>'"
+        )));
+    }
+    Ok((id, reason))
+}
+
+/// One line of the permissions list.
+struct Item {
+    id: String,
+    reason: String,
+    ticked: bool,
+    /// Why the wizard ticked it, shown to the author.
+    because: String,
+}
+
+/// The permissions, like tasksel: every permission of the catalog, the
+/// proposed ones ticked, then "Add a custom permission…" (dbus-talk,
+/// dbus-own, folder, device), asked for until the author confirms.
+/// `--yes`: what is ticked at first.
+fn choose_permissions(proposals: &[Proposal], given: &[(String, String)]) -> Result<Vec<Value>> {
+    let mut items: Vec<Item> = xapp_permissions::CATALOG
+        .iter()
+        .map(|i| {
+            let proposal = proposals.iter().find(|p| p.id == i.id);
+            let from_args = given.iter().find(|(id, _)| id == i.id);
+            Item {
+                id: i.id.to_string(),
+                reason: from_args
+                    .map(|(_, r)| r.clone())
+                    .or_else(|| proposal.map(|p| p.reason.clone()))
+                    .unwrap_or_else(|| default_reason(i.id)),
+                ticked: proposal.is_some() || from_args.is_some(),
+                because: match (from_args, proposal) {
+                    (Some(_), _) => "--permission".into(),
+                    (None, Some(p)) => p.because.clone(),
+                    _ => String::new(),
+                },
+            }
+        })
+        .collect();
+    for (id, reason) in given {
+        if xapp_permissions::info(id).is_none() {
+            items.push(Item {
+                id: id.clone(),
+                reason: reason.clone(),
+                ticked: true,
+                because: "--permission".into(),
+            });
+        }
+    }
+    loop {
+        let mut list: Vec<(String, String, bool)> = items
+            .iter()
+            .map(|it| {
+                let mut label = format!("{}: \"{}\"", xapp_permissions::label(&it.id), it.reason);
+                if !it.because.is_empty() {
+                    label.push_str(&format!(" ({})", it.because));
+                }
+                (it.id.clone(), label, it.ticked)
+            })
+            .collect();
+        list.push(("custom".into(), "Add a custom permission…".into(), false));
+        let q = Question::checklist(
+            "xapp create: permissions",
+            "What the application may ask the user for. The wizard ticked what it \
+             probably needs; tick or untick with the space bar, then OK. The user \
+             is asked about each one when the application first opens.",
+            &list,
+        );
+        let answer = ui::ask(&[q]).ok_or_else(|| err("nobody to answer the wizard (use --yes)"))?;
+        let ticked = ui::ticked(&answer[0]);
+        for (n, it) in items.iter_mut().enumerate() {
+            it.ticked = ticked.contains(&n);
+        }
+        if !ticked.contains(&items.len()) {
+            break;
+        }
+        if let Some(it) = ask_custom()? {
+            items.retain(|i| i.id != it.id);
+            items.push(it);
+        }
+    }
+    Ok(items
+        .iter()
+        .filter(|it| it.ticked)
+        .map(|it| json!({"id": it.id, "reason": it.reason}))
+        .collect())
+}
+
+/// "Add a custom permission…": its kind, its name, its reason.
+fn ask_custom() -> Result<Option<Item>> {
+    let kinds: Vec<String> = xapp_permissions::CUSTOM_KINDS
+        .iter()
+        .map(|(k, what)| format!("{k}: {what}"))
+        .collect();
+    let Some(kind) = ui::input(
+        "xapp create: custom permission",
+        &format!(
+            "Kind of permission:\n{}\n\n(empty: back to the list)",
+            kinds.join("\n")
+        ),
+        "",
+    ) else {
+        return Ok(None);
+    };
+    let kind = kind.trim().to_string();
+    if kind.is_empty() {
+        return Ok(None);
+    }
+    let example = match kind.as_str() {
+        "dbus-talk" | "dbus-own" => "org.example.Service",
+        "folder" => "~/Games  or  /mnt/data:ro",
+        "device" => "input  or  all",
+        _ => {
+            println!("Not a kind of custom permission: {kind}");
+            return Ok(None);
+        }
+    };
+    let Some(value) = ui::input(
+        "xapp create: custom permission",
+        &format!("{kind}: which one? (for example {example})"),
+        "",
+    ) else {
+        return Ok(None);
+    };
+    let id = format!("{kind}:{}", value.trim());
+    let Some(c) = xapp_permissions::custom(&id) else {
+        println!("Not a valid permission: {id}");
+        return Ok(None);
+    };
+    let mut prompt = format!(
+        "{}\n\nThe reason the user reads when asked (\"To read your saved games\"):",
+        c.label()
+    );
+    if let Some(w) = c.warning() {
+        prompt.push_str(&format!(
+            "\n\nCareful: {w} The user is asked with \"no\" first."
+        ));
+    }
+    let Some(reason) = ui::input("xapp create: custom permission", &prompt, "") else {
+        return Ok(None);
+    };
+    if reason.trim().is_empty() {
+        println!("A permission needs a reason: not added.");
+        return Ok(None);
+    }
+    Ok(Some(Item {
+        id: c.id(),
+        reason: reason.trim().to_string(),
+        ticked: true,
+        because: "custom".into(),
+    }))
 }
 
 /// The snapshot of this XeeonOS (XEEONOS_ARCH_SNAPSHOT in os-release).
@@ -483,6 +755,9 @@ struct Found {
     /// Packages the program loads while running: asked before adding.
     loads: Vec<String>,
     closure: Vec<String>,
+    /// Its own files (for the web engine) and what its programs name.
+    files: Vec<String>,
+    hints: Vec<String>,
     sources: Vec<Value>,
     /// `--aur`: {"name", "commit"}.
     aur: Vec<Value>,
@@ -724,6 +999,8 @@ fn from_package(o: &Options, pkg: &str, work: &Path) -> Result<Found> {
         packages,
         loads: Vec::new(),
         closure,
+        files,
+        hints: Vec::new(),
         sources: Vec::new(),
         aur: Vec::new(),
     })
@@ -1077,6 +1354,8 @@ fn from_files(o: &Options, origin: &Source, snapshot: &str, work: &Path) -> Resu
         packages,
         loads,
         closure: lines_of(work, "closure.txt"),
+        files,
+        hints: lines_of(work, "hints.txt"),
         sources: vec![match origin {
             Source::Dir(dir) => json!({"dir": dir.display().to_string(), "to": to}),
             _ => json!({"url": final_url, "sha256": sha256, "to": to}),
@@ -1161,10 +1440,15 @@ pub fn create(o: &Options) -> Result<PathBuf> {
 
     // The questions: the summary, the libraries it loads (if any), then
     // the permissions, one by one.
-    let proposals = propose(&f.closure, &f.categories, &f.mime_types);
+    let given: Vec<(String, String)> = o
+        .permissions
+        .iter()
+        .map(|p| parse_permission(p))
+        .collect::<Result<_>>()?;
+    let proposals = propose(&f.closure, &f.categories, &f.mime_types, &f.files, &f.hints);
     let summary = format!(
         "{} {} ({})\n{}\n\nCommand: {}\nIcon: {}\n{}\n\n\
-         The next questions propose the permissions it probably needs.",
+         Next: the list of permissions, with those it probably needs ticked.",
         f.name,
         f.version,
         f.app_id,
@@ -1187,32 +1471,13 @@ pub fn create(o: &Options) -> Result<PathBuf> {
             true,
         ));
     }
-    let first_permission = questions.len();
-    for p in &proposals {
-        let label = xapp_permissions::info(p.id).map_or(p.id, |i| i.label);
-        questions.push(Question::yes_no(
-            "xapp create: permission",
-            &format!(
-                "{label}?\n\nWhy the wizard proposes it: {}.\nReason shown to the user: \"{}\"",
-                p.because, p.reason
-            ),
-            "Ask for it",
-            "Leave it out",
-            true,
-        ));
-    }
     let answers =
         ui::ask(&questions).ok_or_else(|| err("nobody to answer the wizard (use --yes)"))?;
     let mut packages = f.packages.clone();
     if !f.loads.is_empty() && answers.get(1).is_some_and(|a| a == "yes") {
         packages.extend(f.loads.iter().cloned());
     }
-    let permissions: Vec<Value> = proposals
-        .iter()
-        .zip(answers.iter().skip(first_permission))
-        .filter(|(_, a)| *a == "yes")
-        .map(|(p, _)| json!({"id": p.id, "reason": p.reason}))
-        .collect();
+    let permissions = choose_permissions(&proposals, &given)?;
 
     let names: Map<String, Value> = f
         .names
@@ -1356,22 +1621,78 @@ mod tests {
         let closure: Vec<String> = ["glibc", "gtk4", "libadwaita", "pipewire", "webkitgtk-6.0"]
             .map(String::from)
             .to_vec();
-        let ids: Vec<&str> = propose(&closure, &["Utility".into()], &["image/png".into()])
-            .iter()
-            .map(|p| p.id)
-            .collect();
+        let ids: Vec<&str> = propose(
+            &closure,
+            &["Utility".into()],
+            &["image/png".into()],
+            &[],
+            &[],
+        )
+        .iter()
+        .map(|p| p.id)
+        .collect();
         assert_eq!(
             ids,
-            ["network", "gpu", "notifications", "audio", "pictures"]
+            [
+                "network",
+                "gpu",
+                "notifications",
+                "audio",
+                "pictures",
+                "camera"
+            ]
         );
-        assert!(propose(&["glibc".into()], &[], &[]).is_empty());
-        // Every proposal is a known permission.
+        assert!(propose(&["glibc".into()], &[], &[], &[], &[]).is_empty());
+        // Every proposal is a known permission, with a reason.
         for p in propose(
             &closure,
             &["WebBrowser".into()],
             &["text/html".into(), "video/mp4".into()],
+            &[],
+            &[],
         ) {
             assert!(xapp_permissions::info(p.id).is_some(), "{}", p.id);
+            assert!(!p.reason.is_empty());
+        }
+        // Electron inside (Discord): calls, whatever the packages say.
+        let electron = ["chrome-sandbox".to_string(), "Discord".into()];
+        let ids: Vec<&str> = propose(&["glibc".into()], &[], &[], &electron, &[])
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, ["audio", "camera", "notifications"]);
+        // A chat by its category; a camera named in a program.
+        let ids: Vec<&str> = propose(&[], &["InstantMessaging".into()], &[], &[], &[])
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, ["audio", "camera", "notifications"]);
+        let ids: Vec<&str> = propose(&[], &[], &[], &[], &["camera /dev/video".into()])
+            .iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, ["camera"]);
+    }
+
+    #[test]
+    fn permissions_from_the_command_line() {
+        assert_eq!(
+            parse_permission("camera").unwrap(),
+            ("camera".into(), "To use the camera".into())
+        );
+        assert_eq!(
+            parse_permission("camera:Per le videochiamate").unwrap(),
+            ("camera".into(), "Per le videochiamate".into())
+        );
+        assert_eq!(
+            parse_permission("folder:~/Giochi:ro=Per i salvataggi").unwrap(),
+            ("folder:~/Giochi:ro".into(), "Per i salvataggi".into())
+        );
+        // A custom permission needs its reason.
+        assert!(parse_permission("device:input").is_err());
+        assert!(parse_permission("everything").is_err());
+        for i in xapp_permissions::CATALOG {
+            assert!(!default_reason(i.id).is_empty(), "{}", i.id);
         }
     }
 

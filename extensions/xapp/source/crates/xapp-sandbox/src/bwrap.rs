@@ -82,6 +82,13 @@ pub struct Context {
     pub x11_probe: Option<PathBuf>,
     /// Folders given (their real paths, bound at the same place).
     pub folders: Vec<PathBuf>,
+    /// Folders given read-only (custom permissions `folder:...:ro`).
+    pub ro_folders: Vec<PathBuf>,
+    /// Devices given (custom permissions): "input", "all".
+    pub devices: Vec<String>,
+    /// Without sound: a fake PipeWire and PulseAudio server to note whether
+    /// the application looks for one (`xapp run --trace`).
+    pub audio_probe: Option<PathBuf>,
     /// The filtered session bus, if any.
     pub bus: Option<PathBuf>,
     /// Lent graphics drivers: binds and environment.
@@ -176,7 +183,11 @@ pub fn args(c: &Context) -> Args {
     a.ro_bind(&c.instance.join("group"), "/etc/group");
     a.symlink(Path::new("../proc/self/mounts"), "/etc/mtab");
 
-    a.push(&["--proc", "/proc", "--dev", "/dev"]);
+    if c.devices.iter().any(|d| d == "all") {
+        a.push(&["--proc", "/proc", "--dev-bind", "/dev", "/dev"]);
+    } else {
+        a.push(&["--proc", "/proc", "--dev", "/dev"]);
+    }
     for d in [
         "/sys/block",
         "/sys/bus",
@@ -231,6 +242,9 @@ pub fn args(c: &Context) -> Args {
     for f in &c.folders {
         a.bind(f, &f.to_string_lossy());
     }
+    for f in &c.ro_folders {
+        a.ro_bind(f, &f.to_string_lossy());
+    }
     for (src, dst) in &c.docs {
         a.bind(src, dst);
     }
@@ -276,6 +290,33 @@ pub fn args(c: &Context) -> Args {
             &format!("{run_user}/pulse/native"),
         );
         a.setenv("PULSE_SERVER", &format!("unix:{run_user}/pulse/native"));
+    } else if let Some(probe) = &c.audio_probe {
+        if !c.camera {
+            a.ro_bind(probe, &format!("{run_user}/pipewire-0"));
+        }
+        a.ro_bind(probe, &format!("{run_user}/pulse/native"));
+        a.setenv("PULSE_SERVER", &format!("unix:{run_user}/pulse/native"));
+    }
+    // Game controllers (custom permission device:input).
+    if c.devices.iter().any(|d| d == "input") {
+        a.dev_bind_try(Path::new("/dev/input"), "/dev/input");
+        a.dev_bind_try(Path::new("/dev/uinput"), "/dev/uinput");
+        if let Ok(entries) = fs::read_dir("/dev") {
+            let mut devs: Vec<PathBuf> = entries
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .starts_with("hidraw")
+                })
+                .collect();
+            devs.sort();
+            for d in devs {
+                a.dev_bind_try(&d, &d.to_string_lossy());
+            }
+        }
     }
     if c.camera
         && let Ok(entries) = fs::read_dir("/dev")
@@ -438,6 +479,9 @@ mod tests {
             x11: false,
             x11_probe: None,
             folders: Vec::new(),
+            ro_folders: vec![PathBuf::from("/mnt/data")],
+            devices: vec!["all".into()],
+            audio_probe: Some(PathBuf::from("/nonexistent/audio-probe")),
             bus: Some(PathBuf::from("/nonexistent/bus")),
             gpu_binds: Vec::new(),
             env: Vec::new(),
@@ -447,6 +491,19 @@ mod tests {
         let clear = a.iter().position(|x| x == "--clearenv").unwrap();
         let first_set = a.iter().position(|x| x == "--setenv").unwrap();
         assert!(clear < first_set);
+        // Custom permissions: a read-only folder, every device.
+        assert!(
+            a.windows(3)
+                .any(|w| w[0] == "--ro-bind" && w[1] == "/mnt/data" && w[2] == "/mnt/data")
+        );
+        assert!(
+            a.windows(3)
+                .any(|w| w[0] == "--dev-bind" && w[1] == "/dev" && w[2] == "/dev")
+        );
+        // No sound: the probe stands for PulseAudio and PipeWire.
+        assert!(a.windows(3).any(|w| w[0] == "--ro-bind"
+            && w[1] == "/nonexistent/audio-probe"
+            && w[2] == "/run/user/1000/pipewire-0"));
         // The bus address set in its own section survives.
         assert!(
             a.windows(2)

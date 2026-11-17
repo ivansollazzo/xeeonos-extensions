@@ -478,7 +478,7 @@ pub fn build(o: &Options) -> Result<PathBuf> {
     {
         let id = text(p, "id");
         // X11 was a permission once: now a capability (below).
-        if xapp_permissions::info(&id).is_none() && id != "x11" {
+        if !xapp_permissions::valid(&id) && id != "x11" {
             return Err(err(format!(
                 "recipe: unknown permission \"{id}\" (known: {})",
                 xapp_permissions::known()

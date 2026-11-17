@@ -49,6 +49,7 @@ pub fn build(args: &[String]) -> Result<u8> {
 
 /// `xapp create --arch <package> | --aur <package> | --url <https://...> |
 /// --dir <directory> [--exec <program>] [--icon <image>] [--pkgbuild-ok]
+/// [--permission <id>[=<reason>]]...
 /// [--snapshot YYYY/MM/DD] [--id <app id>] [--output <dir>] [--work <dir>]
 /// [--no-build]`: the wizard. It looks at
 /// the package, proposes a recipe and its permissions, writes the recipe,
@@ -56,6 +57,7 @@ pub fn build(args: &[String]) -> Result<u8> {
 pub fn create(args: &[String]) -> Result<u8> {
     let usage = "usage: xapp create --arch <package> | --aur <package> | --url <https://...> | \
                  --dir <directory> [--exec <program>] [--icon <image>] [--pkgbuild-ok] \
+                 [--permission <id>[=<reason>]]... \
                  [--snapshot YYYY/MM/DD] [--id <app id>] [--output <dir>] [--no-build]";
     let mut source = None;
     let mut o = xapp_build::create::Options {
@@ -67,6 +69,7 @@ pub fn create(args: &[String]) -> Result<u8> {
         exec: None,
         icon: None,
         pkgbuild_ok: false,
+        permissions: Vec::new(),
     };
     let mut build = true;
     let mut it = args.iter();
@@ -84,6 +87,7 @@ pub fn create(args: &[String]) -> Result<u8> {
                 source = Some(xapp_build::create::Source::Dir(PathBuf::from(value()?)));
             }
             "--pkgbuild-ok" => o.pkgbuild_ok = true,
+            "--permission" => o.permissions.push(value()?),
             "--exec" => o.exec = Some(value()?),
             "--icon" => o.icon = Some(value()?),
             "--snapshot" => o.snapshot = Some(value()?),

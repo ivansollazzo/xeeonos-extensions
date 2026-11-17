@@ -187,7 +187,11 @@ pub fn info(args: &[String]) -> Result<u8> {
                 State::No => "not allowed",
                 State::Ask => "asked when it opens",
             };
-            let label = perms::info(&p.id).map_or("unknown to this xapp", |i| i.label);
+            let label = if perms::valid(&p.id) {
+                perms::label(&p.id)
+            } else {
+                "unknown to this xapp".to_string()
+            };
             println!("  {:<14} {:<20} {label}: \"{}\"", p.id, s, p.reason);
         }
     }
@@ -196,31 +200,8 @@ pub fn info(args: &[String]) -> Result<u8> {
 
 /// Names on the session bus that open much more than one application:
 /// the doctor warns before giving them.
-const SENSITIVE: &[(&str, &str)] = &[
-    ("org.freedesktop.secrets", "every password in your keyring"),
-    ("org.kde.kwalletd", "every password in your wallet"),
-    ("org.gnome.keyring", "every password in your keyring"),
-    ("org.freedesktop.systemd1", "your services"),
-    (
-        "org.freedesktop.Flatpak",
-        "running programs outside any sandbox",
-    ),
-    (
-        "org.freedesktop.impl.portal",
-        "the desktop portal's insides, without its questions",
-    ),
-    ("org.gnome.Shell", "your desktop"),
-    ("org.kde.KWin", "your windows and screen"),
-    ("org.kde.plasmashell", "your desktop"),
-    ("org.kde.klauncher", "starting programs outside any sandbox"),
-    ("org.freedesktop.ScreenSaver", "locking your screen"),
-];
-
 fn sensitive(name: &str) -> Option<&'static str> {
-    SENSITIVE
-        .iter()
-        .find(|(prefix, _)| name.starts_with(prefix))
-        .map(|(_, what)| *what)
+    perms::sensitive_bus_name(name)
 }
 
 /// `xapp doctor <app> [--reset]`: offer what the last traced run
@@ -249,20 +230,38 @@ pub fn doctor(args: &[String]) -> Result<u8> {
         report.code, report.seconds
     );
     let extra = overrides::load(&m.app_id);
+    let known = matches!(trust::check(&c), Ok(Trust::Trusted | Trust::Approved));
+    // What a permission gives: the permission is offered (below), if the
+    // application declares it; if not, only its author can add it.
+    let mut wanted: Vec<String> = Vec::new();
+    for f in &report.findings {
+        if let Finding::Wants(p) = f {
+            if m.declares(p).is_none() {
+                println!(
+                    "{name} {}, but its file does not ask for it: add the permission \"{p}\" to its recipe and build it again.",
+                    f.describe()
+                );
+            } else if perms::state(m, p, known) != State::Yes {
+                wanted.push(p.clone());
+            }
+        }
+    }
     let open: Vec<&Finding> = report
         .findings
         .iter()
         .filter(|f| {
             let (kind, value) = f.entry();
-            !extra.has(kind, value) && !(**f == Finding::X11 && perms::has_capability(m, "x11"))
+            !matches!(f, Finding::Wants(_))
+                && !extra.has(kind, value)
+                && !(**f == Finding::X11 && perms::has_capability(m, "x11"))
         })
         .collect();
-    let known = matches!(trust::check(&c), Ok(Trust::Trusted | Trust::Approved));
-    let refused: Vec<String> = perms::all(m, known)
-        .into_iter()
-        .filter(|(p, s)| *s == State::No && perms::info(&p.id).is_some())
-        .map(|(p, _)| p.id.clone())
-        .collect();
+    let mut refused: Vec<String> = wanted;
+    for (p, s) in perms::all(m, known) {
+        if s == State::No && perms::valid(&p.id) && !refused.contains(&p.id) {
+            refused.push(p.id.clone());
+        }
+    }
     if open.is_empty() && refused.is_empty() {
         println!(
             "The sandbox refused nothing it could give. Its own messages: xapp logs {}",
@@ -285,6 +284,7 @@ pub fn doctor(args: &[String]) -> Result<u8> {
                 text.push_str("\n\nIts windows are then less isolated from other X11 windows.");
                 true
             }
+            Finding::Wants(_) => true,
         };
         text.push_str("\n\nUndo with: xapp doctor ");
         text.push_str(&m.app_id);
@@ -304,14 +304,23 @@ pub fn doctor(args: &[String]) -> Result<u8> {
         questions.push(q);
     }
     for id in &refused {
-        let label = perms::info(id).map_or(id.as_str(), |i| i.label);
-        questions.push(Question::yes_no(
+        let label = perms::label(id);
+        let mut text = format!("{name} may not use: {label}.\n\nAllow it now?");
+        if let Some(w) = perms::warning(id) {
+            text.push_str(&format!("\n\nCareful: {w}"));
+        }
+        let mut q = Question::yes_no(
             &format!("{name}: permission"),
-            &format!("{name} may not use: {label} (you said no before).\n\nAllow it now?"),
+            &text,
             "Allow",
             "Don't allow",
             false,
-        ));
+        );
+        if perms::warning(id).is_some() {
+            q.choices.reverse();
+            q.default = 0;
+        }
+        questions.push(q);
     }
     let Some(answers) = ui::ask(&questions) else {
         return Err(err("no terminal to ask in (use --yes)"));

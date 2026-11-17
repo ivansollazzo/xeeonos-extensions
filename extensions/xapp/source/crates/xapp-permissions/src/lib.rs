@@ -21,6 +21,12 @@
 //! player name, the tray, the parts of the desktop portal that ask the user
 //! themselves): see the sandbox (dbus.rs). What the user adds by hand after
 //! `xapp doctor` is in `overrides`.
+//!
+//! Besides the catalog, custom permissions, like Flatpak's: a name on the
+//! session bus (`dbus-talk:<name>`, `dbus-own:<name>`), a folder
+//! (`folder:~/Games`, `folder:/mnt/data:ro`), devices (`device:input`,
+//! `device:all`). Unlike Flatpak they are not given in silence: declared
+//! with a reason and asked like the others (Custom).
 
 pub mod overrides;
 
@@ -149,6 +155,177 @@ pub fn info(id: &str) -> Option<&'static Info> {
     CATALOG.iter().find(|i| i.id == id)
 }
 
+/// A custom permission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Custom {
+    /// Talking to a name on the session bus.
+    Talk(String),
+    /// Owning a name on the session bus.
+    Own(String),
+    /// A folder: `~/...` (in the home) or under /mnt, /media, /run/media.
+    Folder { path: String, read_only: bool },
+    /// Devices: `input` (game controllers: /dev/input, hidraw, uinput) or
+    /// `all` (every device of /dev).
+    Device(String),
+}
+
+/// The kinds of custom permissions, for people.
+pub const CUSTOM_KINDS: &[(&str, &str)] = &[
+    (
+        "dbus-talk",
+        "talk to a name on the session bus (like Flatpak's --talk-name)",
+    ),
+    (
+        "dbus-own",
+        "own a name on the session bus (like Flatpak's --own-name)",
+    ),
+    (
+        "folder",
+        "a folder: ~/Games, /mnt/data (add :ro for read-only)",
+    ),
+    ("device", "devices: input (game controllers) or all"),
+];
+
+/// Names on the session bus that give a lot: asked with "no" first, and
+/// never given by --yes.
+const SENSITIVE: &[(&str, &str)] = &[
+    ("org.freedesktop.secrets", "every password in your keyring"),
+    ("org.kde.kwalletd", "every password in your wallet"),
+    ("org.gnome.keyring", "every password in your keyring"),
+    ("org.freedesktop.systemd1", "your services"),
+    (
+        "org.freedesktop.Flatpak",
+        "running programs outside any sandbox",
+    ),
+    (
+        "org.freedesktop.impl.portal",
+        "the desktop portal's insides, without its questions",
+    ),
+    ("org.gnome.Shell", "your desktop"),
+    ("org.kde.KWin", "your windows and screen"),
+    ("org.kde.plasmashell", "your desktop"),
+    ("org.kde.klauncher", "starting programs outside any sandbox"),
+    ("org.freedesktop.ScreenSaver", "locking your screen"),
+];
+
+/// What a sensitive bus name gives, if it is one.
+pub fn sensitive_bus_name(name: &str) -> Option<&'static str> {
+    SENSITIVE
+        .iter()
+        .find(|(prefix, _)| name.starts_with(prefix))
+        .map(|(_, what)| *what)
+}
+
+/// A folder of a custom permission, checked: in the home (not the home
+/// itself, not a hidden folder at its top: ~/.ssh, ~/.config...) or under
+/// /mnt, /media, /run/media.
+fn valid_folder(path: &str) -> bool {
+    let ok_chars =
+        !path.contains("..") && !path.contains(':') && !path.contains('\n') && !path.ends_with('/');
+    if let Some(rest) = path.strip_prefix("~/") {
+        return ok_chars && !rest.is_empty() && !rest.starts_with('.');
+    }
+    ok_chars
+        && ["/mnt/", "/media/", "/run/media/"]
+            .iter()
+            .any(|p| path.strip_prefix(p).is_some_and(|r| !r.is_empty()))
+}
+
+/// A custom permission, if `id` is one (and well formed).
+pub fn custom(id: &str) -> Option<Custom> {
+    let (kind, value) = id.split_once(':')?;
+    match kind {
+        "dbus-talk" if overrides::valid_bus_name(value) => Some(Custom::Talk(value.into())),
+        "dbus-own" if overrides::valid_bus_name(value) => Some(Custom::Own(value.into())),
+        "folder" => {
+            let (path, read_only) = match value.strip_suffix(":ro") {
+                Some(p) => (p, true),
+                None => (value.strip_suffix(":rw").unwrap_or(value), false),
+            };
+            valid_folder(path).then(|| Custom::Folder {
+                path: path.into(),
+                read_only,
+            })
+        }
+        "device" if matches!(value, "input" | "all") => Some(Custom::Device(value.into())),
+        _ => None,
+    }
+}
+
+impl Custom {
+    /// The permission's id, as written.
+    pub fn id(&self) -> String {
+        match self {
+            Custom::Talk(n) => format!("dbus-talk:{n}"),
+            Custom::Own(n) => format!("dbus-own:{n}"),
+            Custom::Folder { path, read_only } => {
+                format!("folder:{path}{}", if *read_only { ":ro" } else { "" })
+            }
+            Custom::Device(d) => format!("device:{d}"),
+        }
+    }
+
+    /// What it gives, for people.
+    pub fn label(&self) -> String {
+        match self {
+            Custom::Talk(n) => format!("Talk to {n} (session bus)"),
+            Custom::Own(n) => format!("Take the name {n} (session bus)"),
+            Custom::Folder { path, read_only } => format!(
+                "The folder {path}{}",
+                if *read_only { " (read only)" } else { "" }
+            ),
+            Custom::Device(d) if d == "input" => "Input devices (game controllers)".to_string(),
+            Custom::Device(_) => "Every device of the computer".to_string(),
+        }
+    }
+
+    /// Why it is to be given with care (asked with "no" first).
+    pub fn warning(&self) -> Option<String> {
+        match self {
+            Custom::Talk(n) | Custom::Own(n) => {
+                sensitive_bus_name(n).map(|what| format!("It gives {what}."))
+            }
+            Custom::Device(d) if d == "all" => {
+                Some("It gives every device: disks, keyboards, other users' devices.".into())
+            }
+            _ => None,
+        }
+    }
+
+    /// A folder's real path (`~` is the user's home).
+    pub fn folder_path(&self) -> Option<(PathBuf, bool)> {
+        match self {
+            Custom::Folder { path, read_only } => {
+                let p = match path.strip_prefix("~/") {
+                    Some(rest) => paths::home().join(rest),
+                    None => PathBuf::from(path),
+                };
+                Some((p, *read_only))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A permission's label, for people: known or custom.
+pub fn label(id: &str) -> String {
+    match (info(id), custom(id)) {
+        (Some(i), _) => i.label.to_string(),
+        (None, Some(c)) => c.label(),
+        _ => id.to_string(),
+    }
+}
+
+/// Is it a permission (known or custom)?
+pub fn valid(id: &str) -> bool {
+    info(id).is_some() || custom(id).is_some()
+}
+
+/// Given with care: asked with "no" first, never given by --yes.
+pub fn warning(id: &str) -> Option<String> {
+    custom(id).and_then(|c| c.warning())
+}
+
 /// The state of one permission for one application.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -173,7 +350,7 @@ pub fn decided(app_id: &str, id: &str) -> Option<bool> {
 
 /// Record a choice (`None`: forget it, ask again).
 pub fn set(app_id: &str, id: &str, value: Option<bool>) -> Result<()> {
-    if info(id).is_none() {
+    if !valid(id) {
         return Err(err(format!(
             "unknown permission \"{id}\" (known: {})",
             known()
@@ -197,20 +374,27 @@ pub fn forget(app_id: &str) {
 
 /// The names of all known permissions, for messages.
 pub fn known() -> String {
-    CATALOG.iter().map(|i| i.id).collect::<Vec<_>>().join(", ")
+    format!(
+        "{}; custom: dbus-talk:<name>, dbus-own:<name>, folder:<~/path or /mnt/...>[:ro], device:input|all",
+        CATALOG.iter().map(|i| i.id).collect::<Vec<_>>().join(", ")
+    )
 }
 
 /// The state of a permission. `known_author`: trusted or approved author
 /// (defaults apply only then).
 pub fn state(m: &Manifest, id: &str, known_author: bool) -> State {
-    let Some(i) = info(id) else { return State::No };
+    let default = match (info(id), custom(id)) {
+        (Some(i), _) => i.default,
+        (None, Some(_)) => false,
+        _ => return State::No,
+    };
     if m.declares(id).is_none() {
         return State::No;
     }
     match decided(&m.app_id, id) {
         Some(true) => State::Yes,
         Some(false) => State::No,
-        None if i.default && known_author => State::Yes,
+        None if default && known_author => State::Yes,
         None => State::Ask,
     }
 }
@@ -220,12 +404,23 @@ pub fn granted(m: &Manifest, id: &str, known_author: bool) -> bool {
     state(m, id, known_author) == State::Yes
 }
 
-/// The declared permissions still to ask about, in catalog order.
+/// The declared permissions still to ask about: the catalog's in its
+/// order, then the custom ones.
 pub fn pending(m: &Manifest, known_author: bool) -> Vec<&Permission> {
     CATALOG
         .iter()
         .filter_map(|i| m.declares(i.id))
+        .chain(m.permissions.iter().filter(|p| custom(&p.id).is_some()))
         .filter(|p| state(m, &p.id, known_author) == State::Ask)
+        .collect()
+}
+
+/// The custom permissions given.
+pub fn granted_custom(m: &Manifest, known_author: bool) -> Vec<Custom> {
+    m.permissions
+        .iter()
+        .filter_map(|p| custom(&p.id))
+        .filter(|c| granted(m, &c.id(), known_author))
         .collect()
 }
 
@@ -284,5 +479,47 @@ mod tests {
         // Not a permission: decided by the package (manifest user_namespaces).
         assert!(info("nested_sandbox").is_none());
         assert!(info("everything").is_none());
+    }
+
+    #[test]
+    fn custom_permissions() {
+        assert_eq!(
+            custom("dbus-talk:org.kde.kwalletd6"),
+            Some(Custom::Talk("org.kde.kwalletd6".into()))
+        );
+        assert!(warning("dbus-talk:org.kde.kwalletd6").is_some());
+        assert!(warning("dbus-own:org.example.Game").is_none());
+        assert_eq!(
+            custom("folder:~/Giochi:ro"),
+            Some(Custom::Folder {
+                path: "~/Giochi".into(),
+                read_only: true
+            })
+        );
+        assert_eq!(
+            custom("folder:~/Giochi:ro").unwrap().id(),
+            "folder:~/Giochi:ro"
+        );
+        assert!(custom("folder:/mnt/dati").is_some());
+        assert!(custom("device:input").is_some());
+        assert!(warning("device:all").is_some());
+        for bad in [
+            "folder:~",
+            "folder:~/",
+            "folder:~/.ssh",
+            "folder:/",
+            "folder:/etc",
+            "folder:/mnt/../etc",
+            "folder:~/a/../../b",
+            "device:gpu",
+            "dbus-talk:org.freedesktop.DBus",
+            "dbus-talk::1.42",
+            "camera:x",
+            "nonsense",
+        ] {
+            assert!(custom(bad).is_none(), "{bad}");
+        }
+        assert!(valid("camera") && valid("device:input") && !valid("device:x"));
+        assert_eq!(label("folder:/mnt/dati"), "The folder /mnt/dati");
     }
 }
