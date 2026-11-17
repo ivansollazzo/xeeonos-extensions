@@ -529,6 +529,14 @@ Una **ricetta** è una cartella con `recipe.json`:
   scaricati, controllati con lo SHA-256 (un file diverso ferma la build) e
   scompattati in `to` (senza la cartella unica che li contiene), dopo i
   pacchetti e prima di `script`. Solo `https://` e solo dentro `/opt`.
+  Una sorgente può essere anche una cartella dell'utente,
+  `{"dir": "<cartella>", "to": "/opt/<nome>"}`: assoluta, o relativa alla
+  ricetta (per tenerla o condividerla insieme ai file). Viene montata in
+  sola lettura nel container e copiata allo stesso modo.
+- `aur`: pacchetti dell'AUR, `[{"name": "app", "commit": "<40 cifre>"}]`:
+  costruiti nel container dal commit del loro repository AUR (quello del
+  PKGBUILD letto), sui pacchetti dello snapshot, poi installati con le loro
+  dipendenze. Vedi `--aur` più sotto.
 - `user_namespaces`: di solito si omette, `xapp build` lo capisce
   dall'immagine (sezione 8).
 
@@ -553,11 +561,14 @@ già pronta, senza container.
 ### Il wizard (xapp create)
 
 Scrivere una ricetta a mano non serve: `xapp create` la propone partendo
-da un pacchetto Arch o da un archivio pubblicato dagli autori dell'app.
+da un pacchetto Arch, da un pacchetto dell'AUR, da un archivio pubblicato
+dagli autori dell'app o da una cartella sul disco.
 
 ```
 xapp create --arch gnome-calculator
+xapp create --aur xclicker
 xapp create --url "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=it"
+xapp create --dir ~/Progetti/mia-app/dist
 ```
 
 Con `--arch`:
@@ -605,9 +616,34 @@ Con `--url` (solo `https://`):
 4. l'archivio finisce in `/opt/<nome>` dell'immagine (`sources`); i
    permessi sono proposti come per `--arch`, dalle librerie trovate.
 
-`--yes` accetta tutte le proposte (per la CI). `user_namespaces` non
-compare: lo decide `xapp build` (sezione 8). Prossima sorgente: AUR
-(`--aur`, con il PKGBUILD mostrato prima di costruire).
+Con `--dir <cartella>` (un programma compilato in casa, un archivio già
+scompattato): come `--url`, senza download. La cartella è montata in sola
+lettura nel container; nome e versione vengono dal suo nome, l'id è
+`org.xeeonos.app.<nome>` (`--id` per sceglierlo). Nella ricetta la
+sorgente è la cartella, con il percorso assoluto: per conservare la
+ricetta, o metterla in xeeonos-applications, la cartella va dentro la
+ricetta e il percorso diventa relativo.
+
+Con `--aur <pacchetto>`:
+
+1. nel container scarica il repository AUR del pacchetto (l'ultimo
+   commit) e controlla che quello che serve per costruirlo e per usarlo
+   sia nello snapshot. Se manca qualcosa (di solito altri pacchetti AUR,
+   non ancora gestiti, o versioni più nuove: `--snapshot`) si ferma e lo
+   dice;
+2. **mostra il PKGBUILD** e chiede se costruirlo: è codice scritto dal
+   manutentore, non controllato da Arch. La risposta predefinita è "Non
+   costruire", e `--yes` da solo non lo costruisce mai; `--pkgbuild-ok`
+   lo costruisce senza chiedere (script che lo leggono in altro modo);
+3. lo costruisce con `makepkg`, come utente normale e mai come root, in una
+   radice fatta dallo snapshot (le stesse librerie che avrà l'app), dentro
+   il container: mai sul sistema;
+4. da lì è come `--arch`: voce di menu, icona, permessi proposti. Nella
+   ricetta il pacchetto va in `aur` con il **commit** del PKGBUILD letto,
+   così `xapp build` costruisce sempre quello.
+
+`--yes` accetta tutte le proposte (per la CI). `user_namespaces` e le
+capacità non compaiono: le decide `xapp build` (sezioni 8 e 10).
 
 ## 15. Il comando xapp
 
@@ -617,9 +653,11 @@ xapp run [--yes] [--trace] <file|app> [argomenti]
                                           --trace: nota cosa la sandbox rifiuta
 xapp install [--yes] <file>               copia in ~/Applications
 xapp build <ricetta> [--key <file>] [--output <file>] [--no-install] [--root <dir>]
-xapp create --arch <pacchetto> | --url <https://...> [--exec <programma>] [--icon <immagine>]
+xapp create --arch <pacchetto> | --aur <pacchetto> | --url <https://...> | --dir <cartella>
+            [--exec <programma>] [--icon <immagine>] [--pkgbuild-ok]
             [--snapshot AAAA/MM/GG] [--id <id>] [--output <dir>] [--no-build]
-                                          wizard: ricetta da un pacchetto Arch o da un archivio, poi build
+                                          wizard: ricetta da un pacchetto Arch o AUR, da un
+                                          archivio o da una cartella, poi build
 xapp list                                 le applicazioni di ~/Applications
 xapp info <app|file>                      cos'è, autore, snapshot, permessi
 xapp verify <file>                        firma e integrità, senza aprire
@@ -648,7 +686,7 @@ dentro xctl, e non richiede sudo.
 | `xapp-permissions` | catalogo dei permessi e delle capacità, scelte dell'utente, aggiunte di `xapp doctor` (`overrides.rs`) |
 | `xapp-sandbox` | montaggio, seccomp, filtro D-Bus, GPU, riga di comando di bubblewrap, avvio nello scope, `--trace` (`trace.rs`) |
 | `xapp-desktop` | registro, voci di menu, tipo di file, `xapp sync` |
-| `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`, `create-url.sh`) |
+| `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`, `create-url.sh`, `create-aur.sh`), i pacchetti AUR (`aur.sh`) |
 | `xapp` | il programma: legge la riga di comando |
 
 Dipendenze esterne, poche e note: `serde_json` (JSON), `sha2` (SHA-256),
@@ -690,6 +728,11 @@ e per `xapp build` `podman` o `docker`.
 - `xapp build` da una ricetta (pacchetti Arch in un container) e Firefox
   avviato nella sandbox: nella CI di
   [xeeonos-applications](https://github.com/ivansollazzo/xeeonos-applications).
+- Il wizard da capo a fondo (workflow "xapp wizard", sulle pull request
+  che toccano xapp): `--dir` con un programma del runner, la sua voce di
+  menu e l'icona; `--aur` con `--yes` senza `--pkgbuild-ok` rifiutato;
+  `--aur` di un'app vera (xclicker); ogni ricetta costruita fino al file
+  `.xapp`, verificato.
 
 ## 18. Limiti noti e lavori futuri
 
@@ -702,5 +745,7 @@ e per `xapp build` `podman` o `docker`.
 - **Chiave XeeonOS** per le app ufficiali di xeeonos-applications (la
   pubblica in `/usr/lib/xapp/trusted.d/`, la privata come segreto della
   CI), e rotazione delle chiavi.
+- **Dipendenze AUR di pacchetti AUR**: oggi `--aur` si ferma e le
+  elenca.
 - **Deduplicazione** tra immagini, aggiornamenti dalla rete, app condivise
   tra utenti, app in GNOME Software: possibili senza cambiare il formato.

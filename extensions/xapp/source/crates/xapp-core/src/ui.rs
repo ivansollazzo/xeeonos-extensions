@@ -185,7 +185,8 @@ fn ask_whiptail(q: &Question) -> Option<String> {
         if q.default == 1 {
             cmd.arg("--defaultno");
         }
-        cmd.args(["--yesno", &q.text, "20", "76"]);
+        // A long text (a PKGBUILD) scrolls.
+        cmd.args(["--scrolltext", "--yesno", &q.text, "20", "76"]);
     }
     let out = cmd
         .stdin(Stdio::inherit())

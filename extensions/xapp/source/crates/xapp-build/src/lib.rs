@@ -19,9 +19,18 @@
 //!   "icon": "/usr/share/icons/hicolor/128x128/apps/firefox.png",
 //!   "remove": ["usr/lib/firefox/updater"],
 //!   "sources": [{"url": "https://.../app-1.0.tar.xz", "sha256": "...", "to": "/opt/app"}],
+//!   "aur": [{"name": "app-bin", "commit": "<40 hex digits>"}],
 //!   "script": "build.sh"
 //! }
 //! ```
+//!
+//! A source can also be a directory of the user's (`xapp create --dir`):
+//! `{"dir": "files", "to": "/opt/app"}`, relative to the recipe directory
+//! (to keep or share the recipe with its files) or absolute.
+//!
+//! `aur`: packages of the AUR (https://aur.archlinux.org), built in the
+//! container from that commit of their repository (the one whose PKGBUILD
+//! the user read), against the snapshot's packages (aur.sh).
 //!
 //! Whether the application makes its own sandbox with user namespaces
 //! (manifest `user_namespaces`) is found in the image: Chromium, Electron,
@@ -58,6 +67,7 @@ use xapp_trust::keys::{self, Secret};
 pub mod create;
 
 const ROOT_SCRIPT: &str = include_str!("build-root.sh");
+pub(crate) const AUR_LIB: &str = include_str!("aur.sh");
 
 /// Options of `xapp build`.
 pub struct Options {
@@ -77,14 +87,17 @@ struct ContainerBuild<'a> {
     icon: &'a str,
     script: &'a str,
     remove: &'a [String],
-    sources: &'a [String],
+    sources: &'a Sources,
     snapshot: &'a str,
     packages: &'a [String],
+    /// "name commit" lines.
+    aur: &'a [String],
 }
 
 /// Make the image in an Arch Linux container (build-root.sh): work/out/.
 fn image_in_container(b: &ContainerBuild, app_id: &str) -> Result<()> {
     fs::write(b.work.join("build-root.sh"), ROOT_SCRIPT)?;
+    fs::write(b.work.join("aur.sh"), AUR_LIB)?;
     let engine = engine()?;
     let image_name = container_image();
     let mut cmd = Command::new(&engine);
@@ -96,7 +109,19 @@ fn image_in_container(b: &ContainerBuild, app_id: &str) -> Result<()> {
         .args(["--env", &format!("XAPP_ICON={}", b.icon)])
         .args(["--env", &format!("XAPP_SCRIPT={}", b.script)])
         .args(["--env", &format!("XAPP_REMOVE={}", b.remove.join("\n"))])
-        .args(["--env", &format!("XAPP_SOURCES={}", b.sources.join("\n"))]);
+        .args([
+            "--env",
+            &format!("XAPP_SOURCES={}", b.sources.urls.join("\n")),
+        ])
+        .args(["--env", &format!("XAPP_AUR={}", b.aur.join("\n"))]);
+    // The user's directories, read-only, as /src/<n>.
+    let mut dirs = Vec::new();
+    for (n, (dir, to)) in b.sources.dirs.iter().enumerate() {
+        cmd.arg("--volume")
+            .arg(format!("{}:/src/{n}:ro", dir.display()));
+        dirs.push(format!("/src/{n} {to}"));
+    }
+    cmd.args(["--env", &format!("XAPP_DIRS={}", dirs.join("\n"))]);
     if engine.ends_with("docker") {
         // Docker's root is the real root: give the results back to the user.
         cmd.args(["--env", &format!("XAPP_CHOWN={}:{}", uid(), gid())]);
@@ -328,9 +353,23 @@ fn package_version(v: &str) -> String {
     v.rsplit_once('-').map_or(v, |(ver, _)| ver).to_string()
 }
 
-/// The recipe's `sources`, checked, as "url sha256 to" lines.
-fn sources(r: &Value) -> Result<Vec<String>> {
-    let mut out = Vec::new();
+/// The recipe's `sources`, checked.
+#[derive(Debug, Default, PartialEq)]
+struct Sources {
+    /// Archives: "url sha256 to" lines.
+    urls: Vec<String>,
+    /// Directories of the user: (the directory, where it goes).
+    dirs: Vec<(PathBuf, String)>,
+}
+
+/// A source's `to`: a directory of /opt.
+fn source_to(to: &str) -> bool {
+    to.strip_prefix("/opt/")
+        .is_some_and(|d| !d.is_empty() && !d.contains("..") && !d.contains(char::is_whitespace))
+}
+
+fn sources(r: &Value, recipe_dir: &Path) -> Result<Sources> {
+    let mut out = Sources::default();
     for s in r
         .get("sources")
         .and_then(Value::as_array)
@@ -338,6 +377,28 @@ fn sources(r: &Value) -> Result<Vec<String>> {
         .flatten()
     {
         let (url, sum, to) = (text(s, "url"), text(s, "sha256"), text(s, "to"));
+        if url.is_empty() && !text(s, "dir").is_empty() {
+            let dir = recipe_dir.join(text(s, "dir"));
+            let dir = fs::canonicalize(&dir)
+                .ok()
+                .filter(|d| d.is_dir())
+                .ok_or_else(|| err(format!("recipe: no directory {} (source)", dir.display())))?;
+            // ":" and "," would break the container's --volume.
+            if dir.to_string_lossy().contains([':', ',']) {
+                return Err(err(format!(
+                    "recipe: the directory {} has \":\" or \",\" in its path: move it",
+                    dir.display()
+                )));
+            }
+            if !source_to(&to) {
+                return Err(err(format!(
+                    "recipe: source {} goes \"to\" a directory of /opt (/opt/<name>)",
+                    dir.display()
+                )));
+            }
+            out.dirs.push((dir, to));
+            continue;
+        }
         if !url.starts_with("https://") || url.contains(char::is_whitespace) {
             return Err(err(format!(
                 "recipe: source \"{url}\" must be an https:// address"
@@ -346,15 +407,41 @@ fn sources(r: &Value) -> Result<Vec<String>> {
         if sum.len() != 64 || !sum.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(err(format!("recipe: source {url} needs its sha256")));
         }
-        let ok_to = to.strip_prefix("/opt/").is_some_and(|d| {
-            !d.is_empty() && !d.contains("..") && !d.contains(char::is_whitespace)
-        });
-        if !ok_to {
+        if !source_to(&to) {
             return Err(err(format!(
                 "recipe: source {url} goes \"to\" a directory of /opt (/opt/<name>)"
             )));
         }
-        out.push(format!("{url} {} {to}", sum.to_lowercase()));
+        out.urls.push(format!("{url} {} {to}", sum.to_lowercase()));
+    }
+    Ok(out)
+}
+
+/// An AUR package name (what pacman allows).
+pub fn valid_aur_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with(['-', '.'])
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"@._+-".contains(&b))
+}
+
+/// The recipe's `aur`, checked, as "name commit" lines.
+fn aur(r: &Value) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for a in r.get("aur").and_then(Value::as_array).into_iter().flatten() {
+        let (name, commit) = (text(a, "name"), text(a, "commit"));
+        if !valid_aur_name(&name) {
+            return Err(err(format!(
+                "recipe: \"{name}\" is not an AUR package name"
+            )));
+        }
+        if commit.len() != 40 || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(err(format!(
+                "recipe: AUR package {name} needs the commit of its PKGBUILD (40 hex digits)"
+            )));
+        }
+        out.push(format!("{name} {}", commit.to_lowercase()));
     }
     Ok(out)
 }
@@ -398,7 +485,11 @@ pub fn build(o: &Options) -> Result<PathBuf> {
             )));
         }
     }
-    let sources = sources(&r)?;
+    let sources = sources(&r, &o.recipe)?;
+    let aur = aur(&r)?;
+    if packages.is_empty() && aur.is_empty() && sources == Sources::default() && o.root.is_none() {
+        return Err(err("recipe: no packages, aur or sources: nothing to build"));
+    }
     let key = signing_key(&o.key)?;
 
     // 1. The image, made in a container.
@@ -422,6 +513,7 @@ pub fn build(o: &Options) -> Result<PathBuf> {
                 sources: &sources,
                 snapshot: &snapshot,
                 packages: &packages,
+                aur: &aur,
             };
             image_in_container(&c, &app_id)?;
         }
@@ -659,19 +751,56 @@ mod tests {
     #[test]
     fn recipe_sources() {
         let sum = "a".repeat(64);
+        let here = Path::new("/");
         let ok = serde_json::json!({"sources": [{"url": "https://x.org/a.tar.xz", "sha256": sum, "to": "/opt/a"}]});
         assert_eq!(
-            sources(&ok).unwrap(),
+            sources(&ok, here).unwrap().urls,
             [format!("https://x.org/a.tar.xz {sum} /opt/a")]
         );
+        // A directory, relative to the recipe.
+        let dir = std::env::temp_dir().join(format!("xapp-src-{}", std::process::id()));
+        fs::create_dir_all(dir.join("files")).unwrap();
+        let ok = serde_json::json!({"sources": [{"dir": "files", "to": "/opt/b"}]});
+        assert_eq!(
+            sources(&ok, &dir).unwrap().dirs,
+            [(
+                fs::canonicalize(dir.join("files")).unwrap(),
+                "/opt/b".to_string()
+            )]
+        );
+        let missing = serde_json::json!({"sources": [{"dir": "nothing", "to": "/opt/b"}]});
+        assert!(sources(&missing, &dir).is_err());
+        let wrong_to = serde_json::json!({"sources": [{"dir": "files", "to": "/usr"}]});
+        assert!(sources(&wrong_to, &dir).is_err());
+        fs::remove_dir_all(&dir).unwrap();
         for bad in [
             serde_json::json!({"sources": [{"url": "http://x.org/a", "sha256": sum, "to": "/opt/a"}]}),
             serde_json::json!({"sources": [{"url": "https://x.org/a", "sha256": "12", "to": "/opt/a"}]}),
             serde_json::json!({"sources": [{"url": "https://x.org/a", "sha256": sum, "to": "/usr/a"}]}),
             serde_json::json!({"sources": [{"url": "https://x.org/a", "sha256": sum, "to": "/opt/../etc"}]}),
         ] {
-            assert!(sources(&bad).is_err(), "{bad}");
+            assert!(sources(&bad, here).is_err(), "{bad}");
         }
-        assert!(sources(&serde_json::json!({})).unwrap().is_empty());
+        assert_eq!(
+            sources(&serde_json::json!({}), here).unwrap(),
+            Sources::default()
+        );
+    }
+
+    #[test]
+    fn recipe_aur() {
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        let ok = serde_json::json!({"aur": [{"name": "yay-bin", "commit": commit}]});
+        assert_eq!(aur(&ok).unwrap(), [format!("yay-bin {commit}")]);
+        for bad in [
+            serde_json::json!({"aur": [{"name": "Yay", "commit": commit}]}),
+            serde_json::json!({"aur": [{"name": "-x", "commit": commit}]}),
+            serde_json::json!({"aur": [{"name": "a b", "commit": commit}]}),
+            serde_json::json!({"aur": [{"name": "yay", "commit": "HEAD"}]}),
+        ] {
+            assert!(aur(&bad).is_err(), "{bad}");
+        }
+        assert!(valid_aur_name("libc++"));
+        assert!(!valid_aur_name("../x"));
     }
 }

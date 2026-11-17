@@ -16,8 +16,19 @@
 //! while running); the archive goes into /opt/<name> of the image (recipe
 //! `sources`).
 //!
-//! Both are looked at in an Arch Linux container (create-arch.sh,
-//! create-url.sh), like `xapp build` does.
+//! From a directory of the user's (`--dir <directory>`: a program built at
+//! home, or an archive already unpacked) the same as from an archive,
+//! without the download: the recipe's source is that directory.
+//!
+//! From the AUR (`--aur <package>`) it fetches the package's PKGBUILD and
+//! shows it: it is code written by anyone, and is built only if the user
+//! says so (`--pkgbuild-ok` for scripts: `--yes` alone does not). Then it
+//! is built (makepkg, as a normal user, in a root made from the snapshot,
+//! inside the container) and looked at like a package of the snapshot; the
+//! recipe pins the commit of the PKGBUILD that was read (recipe `aur`).
+//!
+//! All are looked at in an Arch Linux container (create-arch.sh,
+//! create-url.sh, create-aur.sh with aur.sh), like `xapp build` does.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,6 +41,7 @@ use xapp_core::util::{Result, err, gid, uid, valid_app_id};
 
 const ARCH_SCRIPT: &str = include_str!("create-arch.sh");
 const URL_SCRIPT: &str = include_str!("create-url.sh");
+const AUR_SCRIPT: &str = include_str!("create-aur.sh");
 
 /// Where the application comes from.
 pub enum Source {
@@ -37,6 +49,10 @@ pub enum Source {
     Arch(String),
     /// An archive published by the application's authors (https://...).
     Url(String),
+    /// A directory of the user's with the application's files.
+    Dir(PathBuf),
+    /// A package of the AUR, built from its PKGBUILD.
+    Aur(String),
 }
 
 /// Options of `xapp create`.
@@ -53,6 +69,9 @@ pub struct Options {
     /// archive, when the wizard cannot tell.
     pub exec: Option<String>,
     pub icon: Option<String>,
+    /// `--aur`: build the PKGBUILD without asking (scripts that read it
+    /// some other way).
+    pub pkgbuild_ok: bool,
 }
 
 /// What a .desktop file says (its [Desktop Entry] group).
@@ -465,18 +484,43 @@ struct Found {
     loads: Vec<String>,
     closure: Vec<String>,
     sources: Vec<Value>,
+    /// `--aur`: {"name", "commit"}.
+    aur: Vec<Value>,
     /// More lines for the summary.
     notes: Vec<String>,
 }
 
+/// How a script of the wizard runs.
+#[derive(Default)]
+struct Run<'a> {
+    /// A directory of the user's, read-only on /source.
+    source: Option<&'a Path>,
+    /// Mounts inside (makepkg's root, --aur).
+    privileged: bool,
+}
+
 /// Run a script of the wizard in an Arch Linux container, on work/.
-fn in_container(work: &Path, script: &str, body: &str, args: &[&str], what: &str) -> Result<()> {
+fn in_container(
+    work: &Path,
+    script: &str,
+    body: &str,
+    args: &[&str],
+    what: &str,
+    how: Run,
+) -> Result<()> {
     fs::write(work.join(script), body)?;
     let engine = crate::engine()?;
     let mut cmd = Command::new(&engine);
     cmd.args(["run", "--rm"])
         .arg("--volume")
         .arg(format!("{}:/work", work.display()));
+    if let Some(dir) = how.source {
+        cmd.arg("--volume")
+            .arg(format!("{}:/source:ro", dir.display()));
+    }
+    if how.privileged {
+        cmd.arg("--privileged");
+    }
     if engine.ends_with("docker") {
         cmd.args(["--env", &format!("XAPP_CHOWN={}:{}", uid(), gid())]);
     }
@@ -519,7 +563,110 @@ fn from_arch(o: &Options, pkg: &str, snapshot: &str, work: &Path) -> Result<Foun
         ARCH_SCRIPT,
         &[snapshot, pkg],
         &format!("Looking at {pkg} in the Arch snapshot {snapshot}"),
+        Run::default(),
     )?;
+    from_package(o, pkg, work)
+}
+
+/// The packages that are not in the snapshot.
+fn not_in_snapshot(work: &Path) -> Vec<String> {
+    lines_of(work, "missing.txt")
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .collect()
+}
+
+/// The question before building a PKGBUILD: "Don't build" first, so that
+/// `--yes` never builds code nobody read.
+fn pkgbuild_question(pkg: &str, commit: &str, pkgbuild: &str) -> Question {
+    let mut q = Question::yes_no(
+        &format!("xapp create: the PKGBUILD of {pkg}"),
+        &format!(
+            "The AUR package {pkg} (commit {commit}) is built from this PKGBUILD, \
+             written by its maintainer, not checked by Arch Linux. It runs in a \
+             container, as a normal user, and the application gets only what it \
+             installs. Build it?\n\n{pkgbuild}"
+        ),
+        "Build it",
+        "Don't build",
+        false,
+    );
+    q.choices.reverse();
+    q.default = 0;
+    q
+}
+
+/// `--aur <package>`: fetch, show the PKGBUILD, build, then as a package.
+fn from_aur(o: &Options, pkg: &str, snapshot: &str, work: &Path) -> Result<Found> {
+    if !crate::valid_aur_name(pkg) {
+        return Err(err(format!("\"{pkg}\" is not an AUR package name")));
+    }
+    fs::write(work.join("aur.sh"), crate::AUR_LIB)?;
+    fs::write(work.join("create-arch.sh"), ARCH_SCRIPT)?;
+    in_container(
+        work,
+        "create-aur.sh",
+        AUR_SCRIPT,
+        &[snapshot, "fetch", pkg],
+        &format!("Fetching {pkg} from the AUR"),
+        Run::default(),
+    )?;
+    let commit = lines_of(work, "commit.txt")
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    if commit.len() != 40 {
+        return Err(err(format!("no commit for the AUR package {pkg}")));
+    }
+    let missing = not_in_snapshot(work);
+    if !missing.is_empty() {
+        return Err(err(format!(
+            "{pkg} needs packages that the Arch snapshot {snapshot} does not have \
+             (other AUR packages, not built by xapp yet, or newer ones: --snapshot): {}",
+            missing.join(" ")
+        )));
+    }
+    let pkgbuild_path = work.join("aur/PKGBUILD");
+    let pkgbuild = fs::read_to_string(&pkgbuild_path)?;
+    if !o.pkgbuild_ok {
+        // On the terminal too: a window shows only part of a long one.
+        println!(
+            "--- PKGBUILD of {pkg} ({}) ---\n{pkgbuild}\n---",
+            pkgbuild_path.display()
+        );
+        let answer = ui::ask(&[pkgbuild_question(pkg, &commit, &pkgbuild)])
+            .ok_or_else(|| err("nobody to read the PKGBUILD"))?;
+        if answer.first().is_none_or(|a| a != "yes") {
+            return Err(err(format!(
+                "the PKGBUILD of {pkg} was not built (it is in {}; --pkgbuild-ok builds it without asking)",
+                pkgbuild_path.display()
+            )));
+        }
+    }
+    in_container(
+        work,
+        "create-aur.sh",
+        AUR_SCRIPT,
+        &[snapshot, "build", pkg],
+        &format!("Building {pkg} (AUR) against the Arch snapshot {snapshot}"),
+        Run {
+            source: None,
+            privileged: true,
+        },
+    )?;
+    let mut f = from_package(o, pkg, work)?;
+    // Not a package of the snapshot: built from the AUR by xapp build.
+    f.packages.retain(|p| p != pkg);
+    f.aur = vec![json!({"name": pkg, "commit": commit})];
+    f.notes = vec![
+        format!("From the AUR: {pkg}, commit {commit}"),
+        format!("Packages: {} (from {pkg})", f.closure.len()),
+    ];
+    Ok(f)
+}
+
+/// A package looked at by create-arch.sh (from the snapshot or the AUR).
+fn from_package(o: &Options, pkg: &str, work: &Path) -> Result<Found> {
     let info = fs::read_to_string(work.join("info.txt"))?;
     let closure = lines_of(work, "closure.txt");
     let files = lines_of(work, "files.txt");
@@ -578,6 +725,7 @@ fn from_arch(o: &Options, pkg: &str, snapshot: &str, work: &Path) -> Result<Foun
         loads: Vec::new(),
         closure,
         sources: Vec::new(),
+        aur: Vec::new(),
     })
 }
 
@@ -739,23 +887,51 @@ pub fn archive_icon(files: &[String], icon_name: &str) -> Option<String> {
 
 /// `--url <address>`: an archive with the application's own files, put in
 /// /opt/<name> of the image; the libraries it needs come from packages.
-fn from_url(o: &Options, url: &str, snapshot: &str, work: &Path) -> Result<Found> {
+/// `--dir <directory>`: the same, from a directory of the user's.
+fn from_files(o: &Options, origin: &Source, snapshot: &str, work: &Path) -> Result<Found> {
+    let (arg, shown, run) = match origin {
+        Source::Url(url) => (url.clone(), url.clone(), Run::default()),
+        Source::Dir(dir) => (
+            "/source".to_string(),
+            dir.display().to_string(),
+            Run {
+                source: Some(dir),
+                privileged: false,
+            },
+        ),
+        _ => return Err(err("not an archive or a directory")),
+    };
     in_container(
         work,
         "create-url.sh",
         URL_SCRIPT,
-        &[snapshot, url],
-        &format!("Looking at {url} (libraries from the Arch snapshot {snapshot})"),
+        &[snapshot, &arg],
+        &format!("Looking at {shown} (libraries from the Arch snapshot {snapshot})"),
+        run,
     )?;
     let first = |f: &str| lines_of(work, f).into_iter().next().unwrap_or_default();
-    let final_url = first("url.txt");
-    let sha256 = first("sha256.txt");
-    if sha256.len() != 64 {
-        return Err(err("the download has no SHA-256"));
-    }
+    let (final_url, sha256, from_name) = match origin {
+        Source::Dir(dir) => (
+            String::new(),
+            String::new(),
+            dir.file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        _ => {
+            let final_url = first("url.txt");
+            let sha256 = first("sha256.txt");
+            if sha256.len() != 64 {
+                return Err(err("the download has no SHA-256"));
+            }
+            let file = url_file(&final_url);
+            (final_url, sha256, file)
+        }
+    };
     let files = lines_of(work, "files.txt");
     let programs = lines_of(work, "programs.txt");
-    let (file_name, file_version) = name_and_version(&url_file(&final_url));
+    let (file_name, file_version) = name_and_version(&from_name);
     let top = first("top.txt");
     let short = if !top.is_empty() && name_and_version(&top).0.len() > 1 {
         name_and_version(&top).0
@@ -767,7 +943,9 @@ fn from_url(o: &Options, url: &str, snapshot: &str, work: &Path) -> Result<Found
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
         .collect();
     if short.is_empty() {
-        return Err(err("cannot tell the application's name from the address"));
+        return Err(err(format!(
+            "cannot tell the application's name from {shown} (--id, and a directory with a name)"
+        )));
     }
     let to = format!("/opt/{short}");
 
@@ -799,7 +977,7 @@ fn from_url(o: &Options, url: &str, snapshot: &str, work: &Path) -> Result<Found
         .or_else(|| pick_program(&programs, &short, None))
         .ok_or_else(|| {
             err(format!(
-                "which program starts it? Programs in the archive: {} (--exec <one of them>)",
+                "which program starts it? Programs in it: {} (--exec <one of them>)",
                 if programs.is_empty() {
                     "none".to_string()
                 } else {
@@ -812,10 +990,10 @@ fn from_url(o: &Options, url: &str, snapshot: &str, work: &Path) -> Result<Found
     let icon = match &o.icon {
         Some(i) => i.trim_start_matches('/').to_string(),
         None => archive_icon(&files, &desktop.icon)
-            .ok_or_else(|| err("no icon in the archive (--icon <path of a .png or .svg in it>)"))?,
+            .ok_or_else(|| err("no icon in it (--icon <path of a .png or .svg in it>)"))?,
     };
     if !files.contains(&icon) {
-        return Err(err(format!("no {icon} in the archive")));
+        return Err(err(format!("no {icon} in {shown}")));
     }
 
     let pkgs = |f: &str| -> Vec<String> {
@@ -834,9 +1012,11 @@ fn from_url(o: &Options, url: &str, snapshot: &str, work: &Path) -> Result<Found
         .filter(|p| !packages.contains(p))
         .collect();
     let missing = lines_of(work, "missing.txt");
-    let mut notes = vec![
-        format!("From: {final_url}"),
-        format!("SHA-256: {sha256}"),
+    let mut notes = match origin {
+        Source::Dir(_) => vec![format!("From the directory: {shown}")],
+        _ => vec![format!("From: {final_url}"), format!("SHA-256: {sha256}")],
+    };
+    notes.extend([
         format!("Into: {to}"),
         format!(
             "Libraries from packages: {}",
@@ -846,7 +1026,7 @@ fn from_url(o: &Options, url: &str, snapshot: &str, work: &Path) -> Result<Found
                 packages.join(" ")
             }
         ),
-    ];
+    ]);
     if !missing.is_empty() {
         notes.push(format!(
             "Not in any package (it may not start): {}",
@@ -872,7 +1052,10 @@ fn from_url(o: &Options, url: &str, snapshot: &str, work: &Path) -> Result<Found
         version
     };
     Ok(Found {
-        app_id: chosen_id(o)?.unwrap_or_else(|| id_from_url(url, &short)),
+        app_id: chosen_id(o)?.unwrap_or_else(|| match origin {
+            Source::Url(url) => id_from_url(url, &short),
+            _ => id_from_url("", &short),
+        }),
         description: if desktop.comment.is_empty() {
             name.clone()
         } else {
@@ -894,7 +1077,11 @@ fn from_url(o: &Options, url: &str, snapshot: &str, work: &Path) -> Result<Found
         packages,
         loads,
         closure: lines_of(work, "closure.txt"),
-        sources: vec![json!({"url": final_url, "sha256": sha256, "to": to})],
+        sources: vec![match origin {
+            Source::Dir(dir) => json!({"dir": dir.display().to_string(), "to": to}),
+            _ => json!({"url": final_url, "sha256": sha256, "to": to}),
+        }],
+        aur: Vec::new(),
         notes,
         short,
     })
@@ -910,8 +1097,32 @@ pub fn create(o: &Options) -> Result<PathBuf> {
     if xapp_core::date::parse(&snapshot).is_none() {
         return Err(err("the snapshot must be a date, YYYY/MM/DD"));
     }
-    let key = match &o.source {
-        Source::Arch(pkg) => pkg.clone(),
+    // A directory: as an absolute path (the recipe is elsewhere).
+    let dir_source;
+    let source = match &o.source {
+        Source::Dir(d) => {
+            let d = fs::canonicalize(d)
+                .ok()
+                .filter(|d| d.is_dir())
+                .ok_or_else(|| err(format!("{} is not a directory", d.display())))?;
+            if d.to_string_lossy().contains([':', ',']) {
+                return Err(err(format!(
+                    "{}: a directory with \":\" or \",\" in its path cannot be given to the container",
+                    d.display()
+                )));
+            }
+            dir_source = Source::Dir(d);
+            &dir_source
+        }
+        s => s,
+    };
+    let key = match source {
+        Source::Arch(pkg) | Source::Aur(pkg) => pkg.clone(),
+        Source::Dir(d) => d
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "dir".into()),
         Source::Url(url) => {
             if !url.starts_with("https://") {
                 return Err(err("the address must start with https://"));
@@ -935,9 +1146,10 @@ pub fn create(o: &Options) -> Result<PathBuf> {
     {
         return Err(err(format!("{} already has a recipe.json", out.display())));
     }
-    let f = match &o.source {
+    let f = match source {
         Source::Arch(pkg) => from_arch(o, pkg, &snapshot, &work)?,
-        Source::Url(url) => from_url(o, url, &snapshot, &work)?,
+        Source::Aur(pkg) => from_aur(o, pkg, &snapshot, &work)?,
+        Source::Url(_) | Source::Dir(_) => from_files(o, source, &snapshot, &work)?,
     };
     let output = o.output.clone().unwrap_or_else(|| PathBuf::from(&f.short));
     if output.join("recipe.json").exists() {
@@ -1022,6 +1234,9 @@ pub fn create(o: &Options) -> Result<PathBuf> {
     recipe.insert("packages".into(), json!(packages));
     if !f.sources.is_empty() {
         recipe.insert("sources".into(), Value::Array(f.sources.clone()));
+    }
+    if !f.aur.is_empty() {
+        recipe.insert("aur".into(), Value::Array(f.aur.clone()));
     }
     recipe.insert("exec".into(), json!(f.exec));
     recipe.insert("gpu".into(), json!("host"));
@@ -1263,5 +1478,19 @@ mod tests {
             .to_vec();
         assert_eq!(archive_icon(&named, "app").unwrap(), "share/app.png");
         assert!(archive_icon(&["a.txt".to_string()], "").is_none());
+    }
+
+    #[test]
+    fn pkgbuild_needs_a_reader() {
+        // --yes picks the first choice: never "Build it".
+        let q = pkgbuild_question("app", "0123", "pkgname=app");
+        assert_eq!(q.choices[0].0, "no");
+        assert_eq!(q.default, 0);
+        assert!(q.text.contains("pkgname=app"));
+    }
+
+    #[test]
+    fn ids_for_directories() {
+        assert_eq!(id_from_url("", "myapp"), "org.xeeonos.app.myapp");
     }
 }

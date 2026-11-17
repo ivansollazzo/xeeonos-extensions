@@ -17,7 +17,11 @@
 #   /work/closure.txt    every package the found ones bring
 #   /work/tree/          its menu entries and images (copied)
 #
-# Usage: create-url.sh <snapshot YYYY/MM/DD> <url>
+# `xapp create --dir` uses it too, for a directory of the user's (mounted
+# read-only on /source): then <url> is /source, nothing is downloaded and
+# url.txt and sha256.txt are empty.
+#
+# Usage: create-url.sh <snapshot YYYY/MM/DD> <url | /source>
 # Environment: XAPP_CHOWN (uid:gid to give the results to).
 set -euo pipefail
 snapshot=${1:?snapshot missing}
@@ -32,19 +36,26 @@ pacman-key --populate archlinux >/dev/null 2>&1
 # readelf and strings, from the container's own (current) Arch.
 pacman -Sy --noconfirm --needed binutils >/dev/null
 
-echo "Downloading $url..."
-curl -fsSL --retry 3 -o download -w '%{url_effective}' "$url" > url.txt
-sha256sum download | cut -d' ' -f1 > sha256.txt
-bsdtar -xf download -C x
-rm -f download
+if [[ $url == /source ]]; then
+    base=/source
+    : > url.txt
+    : > sha256.txt
+else
+    echo "Downloading $url..."
+    curl -fsSL --retry 3 -o download -w '%{url_effective}' "$url" > url.txt
+    sha256sum download | cut -d' ' -f1 > sha256.txt
+    bsdtar -xf download -C x
+    rm -f download
+    base=x
+fi
 # Everything in one directory (firefox/...): that directory is the app.
-mapfile -t entries < <(ls -A x)
+mapfile -t entries < <(ls -A "$base")
 top=
-if [[ ${#entries[@]} -eq 1 && -d x/${entries[0]} ]]; then
+if [[ ${#entries[@]} -eq 1 && -d $base/${entries[0]} ]]; then
     top=${entries[0]}
 fi
 echo "$top" > top.txt
-root=x/$top
+root=$base/$top
 (cd "$root" && find . -mindepth 1 ! -type d -printf '%P\n' | sort) > files.txt
 # Menu entries and images, for the name, the command and the icon.
 (cd "$root" && find . -type f \( -name '*.desktop' -o -name '*.png' -o -name '*.svg' \) \
