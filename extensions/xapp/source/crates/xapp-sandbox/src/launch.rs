@@ -102,15 +102,6 @@ fn lend_files(args: &[String], folders: &[PathBuf]) -> (Vec<String>, Vec<(PathBu
     (out, docs)
 }
 
-/// The scope's unit name: dashes in the id escaped as systemd does.
-fn unit_name(app_id: &str) -> String {
-    format!(
-        "app-xapp-{}-{}",
-        app_id.replace('-', "\\x2d"),
-        std::process::id()
-    )
-}
-
 /// Is standard output a socket (the journal, when started from the menu)?
 fn stdout_is_socket() -> bool {
     use std::os::unix::fs::FileTypeExt;
@@ -287,7 +278,10 @@ pub fn run(l: &Launch) -> Result<i32> {
             .iter()
             .map(|s| s.to_string()),
         );
-        cmd.push(format!("--unit={}", unit_name(&m.app_id)));
+        cmd.push(format!(
+            "--unit={}",
+            crate::instances::unit_name(&m.app_id, std::process::id())
+        ));
         cmd.push("--".into());
     }
     // Started from the menu, the output goes to the journal through a
@@ -357,7 +351,6 @@ mod tests {
     fn names() {
         assert_eq!(percent_decode("a%20b%2Fc"), "a b/c");
         assert_eq!(percent_decode("100%"), "100%");
-        assert!(unit_name("org.foo-bar.App").starts_with("app-xapp-org.foo\\x2dbar.App-"));
     }
 
     #[test]

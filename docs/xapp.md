@@ -370,8 +370,9 @@ apre.
 ## 10. I permessi
 
 Sono come il TCC del Mac. L'app dichiara nel manifest i permessi che **può**
-chiedere, ognuno con il motivo. Un permesso non dichiarato non si può mai
-ottenere.
+chiedere, ognuno con il motivo. Un permesso non dichiarato l'app non può
+chiederlo: può darglielo solo l'utente, a mano (vedi "L'ultima parola è
+dell'utente").
 
 | Permesso | Cosa dà | Di default |
 |---|---|---|
@@ -410,6 +411,32 @@ cambiano con `xapp permissions <app> <permesso> yes|no|ask`. Quello che non
 è permesso **non esiste** nella sandbox: una cartella negata non c'è
 proprio. Se all'avvio non c'è nessuno a cui chiedere, i permessi in sospeso
 non vengono dati per quella volta (e vengono richiesti la volta dopo).
+
+### L'ultima parola è dell'utente (come flatpak override)
+
+```
+xapp permissions <app>                         i permessi e il loro stato
+xapp permissions <app> <permesso> yes|no|ask   cambia una scelta
+xapp permissions <app> --reset                 dimentica le scelte (richiede)
+xapp permissions --all                         le scelte per tutte le app
+xapp permissions --all <permesso> yes|no|ask   una scelta per tutte le app
+```
+
+- Con `no` si toglie un permesso anche se l'app lo dichiara, e anche se di
+  default sarebbe dato (per esempio `network`).
+- Con `yes` si dà anche un permesso che l'app **non** dichiara, sia del
+  catalogo sia personalizzato (`folder:~/Giochi`, `device:input`, ...).
+  `xapp permissions` e `xapp info` lo mostrano con il motivo "added by
+  you". Con `ask` (o `no`) lo si toglie.
+- `--all` vale per tutte le app (`~/.local/state/xapps/permissions.all`).
+  La scelta fatta per una singola app vince su quella per tutte, e tutte e
+  due vincono sul manifest.
+- I permessi delicati (`device:all`, il portachiavi, ...) si possono dare,
+  ma il comando stampa prima un avvertimento.
+
+Anche `xapp doctor` usa questo meccanismo: un permesso voluto dall'app ma non
+dichiarato lo propone comunque (aggiunto a mano), e ricorda che la ricetta
+dovrebbe dichiararlo.
 
 ### Due livelli: capacità e permessi
 
@@ -450,9 +477,9 @@ uscita, durata, nomi del bus rifiutati, X11, permessi voluti) va in
 `~/.local/state/xapps/trace/<id>` e viene stampato.
 
 `xapp doctor` chiede, una cosa per volta, se permettere ciascuna di quelle
-cose (e i permessi dichiarati che l'utente aveva negato). Un permesso
-voluto ma non dichiarato nel file non si può dare: doctor dice di
-aggiungerlo alla ricetta e ricostruire. I nomi delicati
+cose (e i permessi che l'utente aveva negato). Un permesso voluto ma non
+dichiarato nel file viene proposto lo stesso, come aggiunta dell'utente
+(sopra). I nomi delicati
 (portachiavi, systemd, GNOME Shell, KWin, Flatpak, le implementazioni dei
 portal, ...) sono proposti con "no" come risposta predefinita, e `--yes`
 non li permette mai. Le aggiunte stanno in
@@ -564,6 +591,9 @@ Una **ricetta** è una cartella con `recipe.json`:
   dipendenze. Vedi `--aur` più sotto.
 - `user_namespaces`: di solito si omette, `xapp build` lo capisce
   dall'immagine (sezione 8).
+- `multilib`: `true` aggiunge il repository multilib dello stesso
+  snapshot (pacchetti a 32 bit, `lib32-*`, e app che ne hanno bisogno).
+  La build fa solo quello che dice la ricetta; è il wizard a proporlo.
 
 `xapp build <ricetta>`:
 
@@ -618,8 +648,8 @@ Con `--arch`:
    notifiche), anche quando si porta tutto da sé come Discord; dalle
    categorie (chat e chiamate → audio, fotocamera, notifiche; audio e
    video → audio; browser → Download); dai tipi di file che apre
-   (immagini → Immagini, PDF e testo → Documenti, ...); e, per archivi e
-   cartelle, da quello che i programmi nominano (`/dev/video`, il portal
+   (immagini → Immagini, PDF e testo → Documenti, ...); e da quello che
+   i programmi nominano (`/dev/video`, il portal
    Camera → fotocamera; `libpulse.so`, `libpipewire`, `libasound.so` →
    audio). L'autore spunta o toglie quello che vuole. L'ultima voce,
    **"Add a custom permission…"**, chiede tipo, nome e motivo di un
@@ -627,9 +657,26 @@ Con `--arch`:
    comando: `--permission camera`, `--permission "camera:Per le
    videochiamate"`, `--permission "folder:~/Giochi:ro=Per i salvataggi"`
    (ripetibile; quelli personalizzati vogliono il motivo dopo `=`);
-4. scrive `<pacchetto>/recipe.json` (`--output` per un'altra cartella);
-5. chiede se costruire subito l'app e metterla in `~/Applications`
+4. le **euristiche** qui sotto ("Cosa propone il wizard");
+5. scrive `<pacchetto>/recipe.json` (`--output` per un'altra cartella);
+6. chiede se costruire subito l'app e metterla in `~/Applications`
    (`--no-build` per fermarsi alla ricetta).
+
+#### Cosa propone il wizard
+
+Il wizard non conosce le singole app: guarda solo quello che dicono i
+file (`scan.sh`), **propone**, l'utente conferma, e tutto finisce scritto
+nella ricetta, dove si vede e si cambia. `xapp build` poi fa solo quello
+che c'è nella ricetta.
+
+| Cosa trova nei file | Cosa propone |
+|---|---|
+| librerie **nominate** nei programmi e caricate durante l'uso (`dlopen`), che le dipendenze non portano (per esempio `libpulse.so.0` in Electron, una dipendenza solo opzionale del pacchetto) | i pacchetti che le contengono, con una domanda (tutte le sorgenti: `--arch`, `--aur`, `--url`, `--dir`) |
+| le **dipendenze opzionali** del pacchetto (`--arch`, `--aur`): quello che chi lo impacchetta dice che può usare, anche quando i file non lo dicono (un programma che l'app scarica all'avvio) | una lista a caselle; già spuntate quelle che, dalla descrizione, riguardano suono, fotocamera, notifiche, tray, grafica (Discord: `libpulse`, "Pulseaudio support") |
+| un pacchetto, o una sua dipendenza, del repository **multilib**; oppure programmi ELF **a 32 bit** | `"multilib": true` (e, per archivi e cartelle, i `lib32-*` con le librerie che i programmi a 32 bit chiedono) |
+| programmi a 32 bit che disegnano con OpenGL o Vulkan (o un loader `lib32-` nella chiusura) | i driver grafici a 32 bit (`lib32-mesa`, `lib32-vulkan-radeon`, `-intel`, `-nouveau`): XeeonOS non ne ha da prestare |
+| il permesso `audio`, ma solo ALSA (`alsa-lib` senza librerie di PulseAudio o PipeWire) | `pipewire-alsa`: nella sandbox non c'è la scheda audio, solo il socket di PipeWire |
+| quello che i programmi nominano (`/dev/video`, il portal Camera; `libpulse.so`, `libpipewire`, `libasound.so`) | i permessi `camera`, `audio` già spuntati nella lista |
 
 Con `--url` (solo `https://`):
 
@@ -700,10 +747,21 @@ xapp list                                 le applicazioni di ~/Applications
 xapp info <app|file>                      cos'è, autore, snapshot, permessi
 xapp verify <file>                        firma e integrità, senza aprire
 xapp remove <app> [--purge]               toglie il file (i dati restano; --purge: anche quelli)
-xapp permissions <app> [<permesso> yes|no|ask]
+xapp permissions <app> [<permesso> yes|no|ask | --reset]
+                                          mostra o cambia i permessi (anche uno non
+                                          dichiarato); --reset: dimentica le scelte
+xapp permissions --all [<permesso> yes|no|ask]
+                                          lo stesso per tutte le app
 xapp doctor <app> [--reset]               permette quello che --trace ha visto rifiutare
 xapp logs <app> [-f]                      i messaggi dell'app (journal)
+xapp ps                                   le app aperte: pid, da quanto, memoria
+xapp kill <app>                           chiude l'app (tutte le sue finestre e processi)
 ```
+
+`xapp ps` legge le cartelle delle istanze (`$XDG_RUNTIME_DIR/xapp/run/<id>-<pid>`)
+e la memoria dallo scope systemd di ciascuna. `xapp kill` ferma lo scope
+(tutti i processi dell'app); senza il gestore dei servizi dell'utente
+termina `xapp run`, e bubblewrap muore con lui.
 
 Interni, usati dal sistema: `xapp sync` (monitor), `xapp dialog <file>`
 (finestra dei dialoghi), `xapp thumbnail <file> <png> [dim]` (miniature).
@@ -721,10 +779,10 @@ dentro xctl, e non richiede sudo.
 | `xapp-core` | errori, programmi esterni, percorsi, dialoghi (`ui.rs`), versioni, date |
 | `xapp-format` | il file: manifest e contenitore (immagine + trailer) |
 | `xapp-trust` | chiavi Ed25519, firma, autori fidati, pinning, revoca |
-| `xapp-permissions` | catalogo dei permessi e delle capacità, scelte dell'utente, aggiunte di `xapp doctor` (`overrides.rs`) |
-| `xapp-sandbox` | montaggio, seccomp, filtro D-Bus, GPU, riga di comando di bubblewrap, avvio nello scope, `--trace` (`trace.rs`) |
+| `xapp-permissions` | catalogo dei permessi e delle capacità, scelte dell'utente (per app e per tutte), permessi aggiunti a mano, aggiunte di `xapp doctor` (`overrides.rs`) |
+| `xapp-sandbox` | montaggio, seccomp, filtro D-Bus, GPU, riga di comando di bubblewrap, avvio nello scope, `--trace` (`trace.rs`), app aperte (`instances.rs`) |
 | `xapp-desktop` | registro, voci di menu, tipo di file, `xapp sync` |
-| `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`, `create-url.sh`, `create-aur.sh`), i pacchetti AUR (`aur.sh`) |
+| `xapp-build` | `xapp build` (con `build-root.sh` per il container) e il wizard `xapp create` (`create.rs`, `create-arch.sh`, `create-url.sh`, `create-aur.sh`, quello che dicono i file in `scan.sh`), i pacchetti AUR (`aur.sh`) |
 | `xapp` | il programma: legge la riga di comando |
 
 Dipendenze esterne, poche e note: `serde_json` (JSON), `sha2` (SHA-256),

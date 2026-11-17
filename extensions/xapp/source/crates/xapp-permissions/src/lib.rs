@@ -10,7 +10,13 @@
 //! `xapp permissions`. What is not given does not exist in the sandbox: a
 //! folder not given is not there at all.
 //!
-//! Choices: ~/.local/state/xapps/permissions/<app id>, lines `<id>=yes|no`.
+//! Choices: ~/.local/state/xapps/permissions/<app id>, lines `<id>=yes|no`;
+//! for every application, ~/.local/state/xapps/permissions.all. Like
+//! `flatpak override`, the user has the last word: a choice for one
+//! application wins over one for all, and both win over the manifest. A
+//! permission the manifest does not declare can be added by hand
+//! (`xapp permissions <app> <id> yes`, or `--all`): it is then shown as
+//! "added by you".
 //!
 //! Two levels, as on macOS (entitlements of the developer, TCC of the user):
 //! permissions are about the user's things (folders, camera, microphone,
@@ -340,37 +346,112 @@ fn file(app_id: &str) -> PathBuf {
     paths::state().join("permissions").join(app_id)
 }
 
-/// What the user decided (`None`: nothing yet).
-pub fn decided(app_id: &str, id: &str) -> Option<bool> {
-    read_kv(&file(app_id))
-        .into_iter()
-        .rev()
-        .find(|(k, _)| k == id)
-        .map(|(_, v)| v == "yes")
+/// The choices for every application.
+fn all_file() -> PathBuf {
+    paths::state().join("permissions.all")
 }
 
-/// Record a choice (`None`: forget it, ask again).
-pub fn set(app_id: &str, id: &str, value: Option<bool>) -> Result<()> {
+/// The choices of a file, the last one for each permission, in order.
+fn choices_in(path: &std::path::Path) -> Vec<(String, bool)> {
+    let mut out: Vec<(String, bool)> = Vec::new();
+    for (k, v) in read_kv(path) {
+        out.retain(|(id, _)| *id != k);
+        out.push((k, v == "yes"));
+    }
+    out
+}
+
+fn decided_in(path: &std::path::Path, id: &str) -> Option<bool> {
+    choices_in(path)
+        .into_iter()
+        .find(|(k, _)| k == id)
+        .map(|(_, v)| v)
+}
+
+/// What the user decided for this application, else for every application
+/// (`None`: nothing yet).
+pub fn decided(app_id: &str, id: &str) -> Option<bool> {
+    decided_in(&file(app_id), id).or_else(|| decided_in(&all_file(), id))
+}
+
+/// The choices for every application (`xapp permissions --all`).
+pub fn global_choices() -> Vec<(String, bool)> {
+    choices_in(&all_file())
+}
+
+fn set_in(path: &std::path::Path, id: &str, value: Option<bool>) -> Result<()> {
     if !valid(id) {
         return Err(err(format!(
             "unknown permission \"{id}\" (known: {})",
             known()
         )));
     }
-    let mut entries: Vec<(String, String)> = read_kv(&file(app_id))
-        .into_iter()
-        .filter(|(k, _)| k != id)
-        .collect();
+    let mut entries: Vec<(String, String)> =
+        read_kv(path).into_iter().filter(|(k, _)| k != id).collect();
     if let Some(v) = value {
         entries.push((id.to_string(), if v { "yes" } else { "no" }.to_string()));
     }
     let text: String = entries.iter().map(|(k, v)| format!("{k}={v}\n")).collect();
-    write_atomic(&file(app_id), text.as_bytes())
+    write_atomic(path, text.as_bytes())
+}
+
+/// Record a choice (`None`: forget it, ask again). `yes` on a permission
+/// the manifest does not declare adds it.
+pub fn set(app_id: &str, id: &str, value: Option<bool>) -> Result<()> {
+    set_in(&file(app_id), id, value)
+}
+
+/// Record a choice for every application (`None`: forget it).
+pub fn set_global(id: &str, value: Option<bool>) -> Result<()> {
+    set_in(&all_file(), id, value)
 }
 
 /// Forget all the choices for an application.
 pub fn forget(app_id: &str) {
     let _ = fs::remove_file(file(app_id));
+}
+
+/// The reason shown for a permission the user added by hand.
+pub const ADDED: &str = "added by you";
+
+/// The permissions the user added to the ones the manifest declares: given
+/// by hand to this application or to every one (and not taken back for
+/// this one).
+pub fn added(m: &Manifest) -> Vec<Permission> {
+    added_from(
+        &m.permissions,
+        &choices_in(&file(&m.app_id)),
+        &global_choices(),
+    )
+}
+
+fn added_from(
+    declared: &[Permission],
+    app: &[(String, bool)],
+    global: &[(String, bool)],
+) -> Vec<Permission> {
+    let mut out: Vec<Permission> = Vec::new();
+    for (id, _) in app.iter().chain(global).filter(|(_, yes)| *yes) {
+        let own = app.iter().find(|(k, _)| k == id).map(|(_, v)| *v);
+        if own != Some(false)
+            && valid(id)
+            && !declared.iter().any(|p| p.id == *id)
+            && !out.iter().any(|p| p.id == *id)
+        {
+            out.push(Permission {
+                id: id.clone(),
+                reason: ADDED.to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// The declared permissions and those the user added.
+pub fn effective(m: &Manifest) -> Vec<Permission> {
+    let mut all = m.permissions.clone();
+    all.extend(added(m));
+    all
 }
 
 /// The names of all known permissions, for messages.
@@ -389,14 +470,21 @@ pub fn state(m: &Manifest, id: &str, known_author: bool) -> State {
         (None, Some(_)) => false,
         _ => return State::No,
     };
-    if m.declares(id).is_none() {
-        return State::No;
-    }
-    match decided(&m.app_id, id) {
-        Some(true) => State::Yes,
-        Some(false) => State::No,
-        None if default && known_author => State::Yes,
-        None => State::Ask,
+    resolve(
+        m.declares(id).is_some(),
+        default && known_author,
+        decided(&m.app_id, id),
+    )
+}
+
+/// The state from: declared by the manifest, given by default, what the
+/// user decided. Undeclared: only what the user added by hand.
+fn resolve(declared: bool, default: bool, decided: Option<bool>) -> State {
+    match (decided, declared) {
+        (Some(true), _) => State::Yes,
+        (Some(false), _) | (None, false) => State::No,
+        (None, true) if default => State::Yes,
+        (None, true) => State::Ask,
     }
 }
 
@@ -418,18 +506,22 @@ pub fn pending(m: &Manifest, known_author: bool) -> Vec<&Permission> {
 
 /// The custom permissions given.
 pub fn granted_custom(m: &Manifest, known_author: bool) -> Vec<Custom> {
-    m.permissions
+    effective(m)
         .iter()
         .filter_map(|p| custom(&p.id))
         .filter(|c| granted(m, &c.id(), known_author))
         .collect()
 }
 
-/// Every declared permission with its state (unknown ones: never given).
-pub fn all(m: &Manifest, known_author: bool) -> Vec<(&Permission, State)> {
-    m.permissions
-        .iter()
-        .map(|p| (p, state(m, &p.id, known_author)))
+/// Every declared permission, then those the user added, with its state
+/// (unknown ones: never given).
+pub fn all(m: &Manifest, known_author: bool) -> Vec<(Permission, State)> {
+    effective(m)
+        .into_iter()
+        .map(|p| {
+            let s = state(m, &p.id, known_author);
+            (p, s)
+        })
         .collect()
 }
 
@@ -523,5 +615,38 @@ mod tests {
         }
         assert!(valid("camera") && valid("device:input") && !valid("device:x"));
         assert_eq!(label("folder:/mnt/dati"), "The folder /mnt/dati");
+    }
+
+    #[test]
+    fn the_user_has_the_last_word() {
+        // Declared: asked, given by default, or what the user said.
+        assert_eq!(resolve(true, false, None), State::Ask);
+        assert_eq!(resolve(true, true, None), State::Yes);
+        assert_eq!(resolve(true, true, Some(false)), State::No);
+        // Not declared: never, unless added by hand.
+        assert_eq!(resolve(false, true, None), State::No);
+        assert_eq!(resolve(false, false, Some(true)), State::Yes);
+    }
+
+    #[test]
+    fn permissions_added_by_hand() {
+        let m = [Permission {
+            id: "network".into(),
+            reason: "r".into(),
+        }];
+        let yes = |id: &str| (id.to_string(), true);
+        let no = |id: &str| (id.to_string(), false);
+        let ids = |v: Vec<Permission>| v.into_iter().map(|p| p.id).collect::<Vec<_>>();
+        // For this one, for all; declared ones and unknown ones are not added.
+        assert_eq!(
+            ids(added_from(
+                &m,
+                &[yes("camera"), yes("network"), yes("nonsense")],
+                &[yes("folder:~/Giochi"), yes("camera"), no("audio")]
+            )),
+            ["camera", "folder:~/Giochi"]
+        );
+        // Given to all, taken back for this one.
+        assert!(added_from(&m, &[no("camera")], &[yes("camera")]).is_empty());
     }
 }

@@ -30,6 +30,9 @@ Server = https://archive.archlinux.org/repos/$snapshot/\$repo/os/\$arch
 
 [extra]
 Server = https://archive.archlinux.org/repos/$snapshot/\$repo/os/\$arch
+
+[multilib]
+Server = https://archive.archlinux.org/repos/$snapshot/\$repo/os/\$arch
 CONF
 
 case $step in

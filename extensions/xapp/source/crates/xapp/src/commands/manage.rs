@@ -8,6 +8,7 @@ use xapp_core::util::{Result, err, run as run_program};
 use xapp_desktop::{registry, sync::files};
 use xapp_format::Container;
 use xapp_permissions::{self as perms, State, overrides};
+use xapp_sandbox::instances;
 use xapp_sandbox::trace::{self, Finding};
 use xapp_trust::{self as trust, Trust, keys};
 
@@ -177,11 +178,12 @@ pub fn info(args: &[String]) -> Result<u8> {
         }
     );
     println!("Data:        {}", paths::app_data(&m.app_id).display());
-    if m.permissions.is_empty() {
+    let all = perms::all(m, known);
+    if all.is_empty() {
         println!("Permissions: none");
     } else {
         println!("Permissions:");
-        for (p, s) in perms::all(m, known) {
+        for (p, s) in all {
             let s = match s {
                 State::Yes => "allowed",
                 State::No => "not allowed",
@@ -231,19 +233,20 @@ pub fn doctor(args: &[String]) -> Result<u8> {
     );
     let extra = overrides::load(&m.app_id);
     let known = matches!(trust::check(&c), Ok(Trust::Trusted | Trust::Approved));
-    // What a permission gives: the permission is offered (below), if the
-    // application declares it; if not, only its author can add it.
+    // What a permission gives: the permission is offered (below), also if
+    // the application does not declare it (then it is added by hand).
     let mut wanted: Vec<String> = Vec::new();
     for f in &report.findings {
-        if let Finding::Wants(p) = f {
+        if let Finding::Wants(p) = f
+            && perms::state(m, p, known) != State::Yes
+        {
             if m.declares(p).is_none() {
                 println!(
-                    "{name} {}, but its file does not ask for it: add the permission \"{p}\" to its recipe and build it again.",
+                    "{name} {}, but its file does not ask for it (its recipe should).",
                     f.describe()
                 );
-            } else if perms::state(m, p, known) != State::Yes {
-                wanted.push(p.clone());
             }
+            wanted.push(p.clone());
         }
     }
     let open: Vec<&Finding> = report
@@ -366,21 +369,82 @@ pub fn verify(args: &[String]) -> Result<u8> {
     Ok(0)
 }
 
-/// `xapp permissions <app> [<permission> yes|no|ask]`.
+/// "yes", "no", "ask" and their synonyms.
+fn choice(word: &str) -> Result<Option<bool>> {
+    match word {
+        "yes" | "allow" | "on" => Ok(Some(true)),
+        "no" | "deny" | "off" => Ok(Some(false)),
+        "ask" | "reset" => Ok(None),
+        other => Err(err(format!("\"{other}\": say yes, no or ask"))),
+    }
+}
+
+/// Before giving a permission to handle with care: say why.
+fn warn_if_careful(id: &str, value: Option<bool>) {
+    if value == Some(true)
+        && let Some(w) = perms::warning(id)
+    {
+        eprintln!("xapp: careful: {w}");
+    }
+}
+
+const PERMISSIONS_USAGE: &str = "usage: xapp permissions <app> [<permission> yes|no|ask | --reset]\n       \
+     xapp permissions --all [<permission> yes|no|ask]";
+
+/// `xapp permissions <app> [<permission> yes|no|ask | --reset]`, and
+/// `xapp permissions --all [...]` for every application. Like `flatpak
+/// override`: the user may also give a permission the application does not
+/// declare, or take back one it does.
 pub fn permissions(args: &[String]) -> Result<u8> {
     let Some(target) = args.first() else {
-        return Err(err(
-            "usage: xapp permissions <app> [<permission> yes|no|ask]",
-        ));
+        return Err(err(PERMISSIONS_USAGE));
     };
+    if target == "--all" {
+        return match args.len() {
+            1 => {
+                let all = perms::global_choices();
+                if all.is_empty() {
+                    println!("No choice for every application.");
+                }
+                for (id, v) in all {
+                    println!(
+                        "{id:<14} {:<4} {}",
+                        if v { "yes" } else { "no" },
+                        perms::label(&id)
+                    );
+                }
+                Ok(0)
+            }
+            3 => {
+                let value = choice(&args[2])?;
+                warn_if_careful(&args[1], value);
+                perms::set_global(&args[1], value)?;
+                println!(
+                    "Every application: {} {}",
+                    args[1],
+                    match value {
+                        Some(true) => "allowed (unless you said no for one of them)",
+                        Some(false) => "not allowed (unless you said yes for one of them)",
+                        None => "as each application asks",
+                    }
+                );
+                let _ = xapp_desktop::sync();
+                Ok(0)
+            }
+            _ => Err(err(PERMISSIONS_USAGE)),
+        };
+    }
+    if args.get(1).is_some_and(|a| a == "--reset") {
+        let id = app_id_of(target)?;
+        perms::forget(&id);
+        println!("{id}: your choices are gone; it asks again at the next start.");
+        let _ = xapp_desktop::sync();
+        return Ok(0);
+    }
     if args.len() >= 3 {
         let id = app_id_of(target)?;
-        let value = match args[2].as_str() {
-            "yes" | "allow" | "on" => Some(true),
-            "no" | "deny" | "off" => Some(false),
-            "ask" | "reset" => None,
-            other => return Err(err(format!("\"{other}\": say yes, no or ask"))),
-        };
+        let value = choice(&args[2])?;
+        warn_if_careful(&args[1], value);
         perms::set(&id, &args[1], value)?;
         println!(
             "{id}: {} {}",
@@ -388,18 +452,22 @@ pub fn permissions(args: &[String]) -> Result<u8> {
             match value {
                 Some(true) => "allowed",
                 Some(false) => "not allowed",
-                None => "asked at the next start",
+                None => "as it asks (at the next start)",
             }
         );
         let _ = xapp_desktop::sync();
         return Ok(0);
     }
+    if args.len() != 1 {
+        return Err(err(PERMISSIONS_USAGE));
+    }
     let c = open_target(target)?;
     let known = matches!(trust::check(&c), Ok(Trust::Trusted | Trust::Approved));
-    if c.manifest.permissions.is_empty() {
+    let all = perms::all(&c.manifest, known);
+    if all.is_empty() {
         println!("{} asks for no permissions.", c.manifest.app_id);
     }
-    for (p, s) in perms::all(&c.manifest, known) {
+    for (p, s) in all {
         let s = match s {
             State::Yes => "yes",
             State::No => "no",
@@ -407,6 +475,50 @@ pub fn permissions(args: &[String]) -> Result<u8> {
         };
         println!("{:<14} {s:<4} {}", p.id, p.reason);
     }
+    Ok(0)
+}
+
+/// `xapp ps`: the applications running now.
+pub fn ps() -> Result<u8> {
+    let all = instances::running();
+    if all.is_empty() {
+        println!("No application is running.");
+        return Ok(0);
+    }
+    println!(
+        "{:<32} {:>8} {:>12} {:>9}",
+        "APPLICATION", "PID", "RUNNING", "MEMORY"
+    );
+    for r in &all {
+        println!(
+            "{:<32} {:>8} {:>12} {:>9}",
+            r.app_id,
+            r.pid,
+            instances::human_duration(r.uptime),
+            instances::memory(r).map_or("-".to_string(), instances::human_size)
+        );
+    }
+    Ok(0)
+}
+
+/// `xapp kill <app>`: stop every instance of it.
+pub fn kill(args: &[String]) -> Result<u8> {
+    let Some(target) = args.first() else {
+        return Err(err("usage: xapp kill <app>"));
+    };
+    let id = app_id_of(target)?;
+    let mine: Vec<_> = instances::running()
+        .into_iter()
+        .filter(|r| r.app_id == id)
+        .collect();
+    if mine.is_empty() {
+        println!("{id} is not running.");
+        return Ok(1);
+    }
+    for r in &mine {
+        instances::stop(r)?;
+    }
+    println!("{id} stopped.");
     Ok(0)
 }
 

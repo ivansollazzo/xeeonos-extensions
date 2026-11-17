@@ -10,6 +10,14 @@
 #   /work/icons.txt     for a menu icon the package does not have (a theme
 #                       icon, like kcalc's accessories-calculator): the
 #                       packages of the snapshot that have it, "package path"
+#   /work/loads.txt     "library package": libraries its programs name and
+#                       load while running (dlopen: sound, video, ...) that
+#                       its dependencies do not bring (optional ones)
+#   /work/hints.txt     "permission what": what its programs name that a
+#                       permission gives (scan.sh)
+#   /work/multilib.txt  why it needs the multilib repository, if it does
+#   /work/gpu32.txt     32-bit graphics drivers to propose (scan.sh)
+#   /work/optdeps.txt   its optional dependencies: "name<TAB>description"
 #
 # Usage: create-arch.sh <snapshot YYYY/MM/DD> <package> [<package file>]
 #   (a package file: built from the AUR by create-aur.sh, not in the
@@ -19,11 +27,15 @@ set -euo pipefail
 snapshot=${1:?snapshot missing}
 pkg=${2:?package missing}
 local_file=${3:-}
-rm -rf /work/pkgroot /work/pkg /work/info.txt /work/closure.txt /work/files.txt /work/icons.txt
+rm -rf /work/pkgroot /work/pkg /work/info.txt /work/closure.txt /work/files.txt /work/icons.txt \
+    /work/loads.txt /work/hints.txt /work/multilib.txt /work/gpu32.txt /work/optdeps.txt
 mkdir -p /work/pkgroot /work/pkg
+. /work/scan.sh
 
 pacman-key --init >/dev/null 2>&1
 pacman-key --populate archlinux >/dev/null 2>&1
+# readelf and strings, from the container's own (current) Arch.
+pacman -Sy --noconfirm --needed binutils >/dev/null
 cat > /tmp/pacman.conf <<CONF
 [options]
 Architecture = x86_64
@@ -34,6 +46,9 @@ DisableSandbox
 Server = https://archive.archlinux.org/repos/$snapshot/\$repo/os/\$arch
 
 [extra]
+Server = https://archive.archlinux.org/repos/$snapshot/\$repo/os/\$arch
+
+[multilib]
 Server = https://archive.archlinux.org/repos/$snapshot/\$repo/os/\$arch
 CONF
 # An empty root: nothing counts as installed, so the closure is complete.
@@ -68,7 +83,53 @@ grep -E '^usr/share/(applications|icons|pixmaps|metainfo)/' /work/files.txt > /w
 if [[ -s /work/wanted.txt ]]; then
     bsdtar -xf "$file" -C /work/pkgroot -T /work/wanted.txt
 fi
+
+# Its programs: what they name (libraries loaded while running, what a
+# permission gives) and whether they are 32-bit.
+mkdir -p /tmp/full
+bsdtar -xf "$file" -C /tmp/full
 rm -rf /work/pkg
+p -Fy >/dev/null
+scan_files /tmp/full /work/files.txt
+cp /tmp/hints /work/hints.txt
+sed 's|.*/||' /work/files.txt | sort -u > /tmp/own
+sort -u /tmp/named | comm -23 - /tmp/own > /tmp/named.sorted
+owners_of usr/lib /tmp/named.sorted > /tmp/owners
+# The closure's packages that are in the snapshot (not one built from the
+# AUR), for pacman.
+mapfile -t in_repo < <(if [[ -n $local_file ]]; then grep -vxF "$pkg" /work/closure.txt; else cat /work/closure.txt; fi || true)
+loads_of /tmp/owners /tmp/named.sorted "${in_repo[@]}" > /work/loads.txt
+rm -rf /tmp/full
+# multilib: the package or what it needs is in it, or it has 32-bit programs.
+: > /work/multilib.txt
+mapfile -t m < <(multilib_of "${in_repo[@]}")
+if [[ ${#m[@]} -gt 0 ]]; then
+    echo "32-bit packages: ${m[*]}" >> /work/multilib.txt
+fi
+if [[ -s /tmp/elf32 ]]; then
+    echo "32-bit programs: $(head -n3 /tmp/elf32 | tr '\n' ' ')" >> /work/multilib.txt
+fi
+gpu32 /work/closure.txt > /work/gpu32.txt
+# Its optional dependencies: what its packagers say it can use (sound,
+# tray, ...), even when its files cannot say it (a program it downloads
+# when it starts). Those the snapshot has and the closure does not:
+# "name<TAB>description".
+: > /work/optdeps.txt
+awk '/^Optional Deps/ {on = 1; sub(/^Optional Deps *: */, ""); print; next}
+     on && /^[^ ]/ {on = 0}
+     on {sub(/^ +/, ""); print}' /work/info.txt |
+    while IFS= read -r line; do
+        [[ -n $line && $line != None ]] || continue
+        name=${line%%:*}
+        name=${name%%[<>=]*}
+        desc=${line#*:}
+        desc=${desc# }
+        desc=${desc% \[installed\]}
+        grep -qxF "$name" /work/closure.txt && continue
+        if p -Sp --noconfirm --print-format '%n' "$name" >/dev/null 2>&1; then
+            printf '%s\t%s\n' "$name" "$desc" >> /work/optdeps.txt
+        fi
+    done
 # Menu icons named after a theme icon: who has them (the files database).
 : > /work/icons.txt
 mapfile -t icons < <(cat /work/pkgroot/usr/share/applications/*.desktop 2>/dev/null |

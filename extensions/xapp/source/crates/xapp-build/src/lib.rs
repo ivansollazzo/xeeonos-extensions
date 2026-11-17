@@ -42,6 +42,11 @@
 //! interface that opens only on X11 (needs_x11). A recipe can add one with
 //! `"capabilities": ["x11"]`.
 //!
+//! `"multilib": true` adds the snapshot's multilib repository (32-bit
+//! packages: lib32-*, and applications that need them). The build does
+//! only what the recipe says; `xapp create` proposes it when the files say
+//! so (32-bit programs or packages).
+//!
 //! `version` may be left out: it is then the version of the first package.
 //! `sources` are archives of the application's authors (official binaries):
 //! downloaded, checked against their SHA-256 and unpacked in their `to`
@@ -92,6 +97,7 @@ struct ContainerBuild<'a> {
     packages: &'a [String],
     /// "name commit" lines.
     aur: &'a [String],
+    multilib: bool,
 }
 
 /// Make the image in an Arch Linux container (build-root.sh): work/out/.
@@ -113,7 +119,11 @@ fn image_in_container(b: &ContainerBuild, app_id: &str) -> Result<()> {
             "--env",
             &format!("XAPP_SOURCES={}", b.sources.urls.join("\n")),
         ])
-        .args(["--env", &format!("XAPP_AUR={}", b.aur.join("\n"))]);
+        .args(["--env", &format!("XAPP_AUR={}", b.aur.join("\n"))])
+        .args([
+            "--env",
+            &format!("XAPP_MULTILIB={}", if b.multilib { "1" } else { "" }),
+        ]);
     // The user's directories, read-only, as /src/<n>.
     let mut dirs = Vec::new();
     for (n, (dir, to)) in b.sources.dirs.iter().enumerate() {
@@ -514,6 +524,7 @@ pub fn build(o: &Options) -> Result<PathBuf> {
                 snapshot: &snapshot,
                 packages: &packages,
                 aur: &aur,
+                multilib: r.get("multilib").and_then(Value::as_bool).unwrap_or(false),
             };
             image_in_container(&c, &app_id)?;
         }
