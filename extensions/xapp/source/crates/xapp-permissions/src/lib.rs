@@ -11,6 +11,18 @@
 //! folder not given is not there at all.
 //!
 //! Choices: ~/.local/state/xapps/permissions/<app id>, lines `<id>=yes|no`.
+//!
+//! Two levels, as on macOS (entitlements of the developer, TCC of the user):
+//! permissions are about the user's things (folders, camera, microphone,
+//! network) and are the user's to give; capabilities (CAPABILITIES) are what
+//! the application needs from the system to work at all, are found in its
+//! image by `xapp build`, and are given without asking. A few more things
+//! every application has (its own names on the session bus, its media
+//! player name, the tray, the parts of the desktop portal that ask the user
+//! themselves): see the sandbox (dbus.rs). What the user adds by hand after
+//! `xapp doctor` is in `overrides`.
+
+pub mod overrides;
 
 use std::fs;
 use std::path::PathBuf;
@@ -100,18 +112,37 @@ pub const CATALOG: &[Info] = &[
         folder: None,
     },
     Info {
-        id: "x11",
-        label: "X11 windows (older programs; weaker isolation)",
-        default: false,
-        folder: None,
-    },
-    Info {
         id: "autostart",
         label: "Start when you log in",
         default: false,
         folder: None,
     },
 ];
+
+/// A capability: needed from the system to work, given without asking.
+pub struct Capability {
+    pub id: &'static str,
+    /// What it gives, for people.
+    pub label: &'static str,
+}
+
+pub const CAPABILITIES: &[Capability] = &[Capability {
+    id: "x11",
+    label: "X11 windows (an interface that opens only on X11; less isolated from other X11 windows)",
+}];
+
+/// A capability's description, if it is a known one.
+pub fn capability(id: &str) -> Option<&'static Capability> {
+    CAPABILITIES.iter().find(|c| c.id == id)
+}
+
+/// Does the application have a capability (from its file, or added by the
+/// user with `xapp doctor`)?
+pub fn has_capability(m: &Manifest, id: &str) -> bool {
+    capability(id).is_some()
+        && (m.capabilities.iter().any(|c| c == id)
+            || overrides::load(&m.app_id).has("capability", id))
+}
 
 /// A permission's description, if it is a known one.
 pub fn info(id: &str) -> Option<&'static Info> {
@@ -244,6 +275,12 @@ mod tests {
             );
         }
         assert!(info("camera").is_some());
+        // A capability, not a permission.
+        assert!(info("x11").is_none());
+        assert!(capability("x11").is_some());
+        for c in CAPABILITIES {
+            assert!(info(c.id).is_none(), "{} is both", c.id);
+        }
         // Not a permission: decided by the package (manifest user_namespaces).
         assert!(info("nested_sandbox").is_none());
         assert!(info("everything").is_none());

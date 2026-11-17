@@ -9,6 +9,9 @@
 //!      with the application's reason;
 //!   4. the sandbox.
 //!
+//! `--trace` notes what the sandbox refused (session bus, X11) and says it
+//! at the end; `xapp doctor` then offers to allow it.
+//!
 //! The questions are terminal dialogs (xapp_core::ui): in the terminal, or
 //! in a terminal window opened for them when started from the menu.
 
@@ -50,8 +53,13 @@ fn move_to_applications(c: &Container) -> Result<PathBuf> {
 }
 
 pub fn run(args: &[String]) -> Result<u8> {
+    // --trace: note what the sandbox refuses, then tell (xapp doctor).
+    let trace = args.first().is_some_and(|a| a == "--trace");
+    let args = if trace { &args[1..] } else { args };
     let Some(target) = args.first() else {
-        return Err(err("usage: xapp run [--yes] <file|app> [args...]"));
+        return Err(err(
+            "usage: xapp run [--yes] [--trace] <file|app> [args...]",
+        ));
     };
     let mut c = open_target(target)?;
     let m = c.manifest.clone();
@@ -184,6 +192,32 @@ pub fn run(args: &[String]) -> Result<u8> {
         container: &c,
         known_author: true,
         args: args[1..].to_vec(),
+        trace,
     })?;
+    if trace {
+        print_trace(&m.app_id);
+    }
     Ok(code.clamp(0, 255) as u8)
+}
+
+/// What a traced run found, in words.
+fn print_trace(app_id: &str) {
+    let Some(r) = xapp_sandbox::trace::load(app_id) else {
+        return;
+    };
+    eprintln!();
+    eprintln!(
+        "xapp: {app_id} ended with code {} after {} s.",
+        r.code, r.seconds
+    );
+    if r.findings.is_empty() {
+        eprintln!("xapp: the sandbox refused nothing on the session bus or X11.");
+        eprintln!("xapp: its own messages are above (or: xapp logs {app_id}).");
+        return;
+    }
+    eprintln!("xapp: the sandbox refused:");
+    for f in &r.findings {
+        eprintln!("  - it {}", f.describe());
+    }
+    eprintln!("xapp: to allow some of these: xapp doctor {app_id}");
 }

@@ -10,6 +10,7 @@
 //!   gpu.rs      the graphics drivers lent by the system
 //!   bwrap.rs    the sandbox itself: bubblewrap's command line
 //!   launch.rs   putting it together, in a systemd scope of its own
+//!   trace.rs    `xapp run --trace`: what the sandbox refused, in words
 
 pub mod bwrap;
 pub mod dbus;
@@ -17,5 +18,6 @@ pub mod gpu;
 pub mod launch;
 pub mod mount;
 pub mod seccomp;
+pub mod trace;
 
 pub use launch::{Launch, run};
