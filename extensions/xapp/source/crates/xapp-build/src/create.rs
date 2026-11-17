@@ -346,6 +346,33 @@ pub fn propose(closure: &[String], categories: &[String], mime: &[String]) -> Ve
     if let Some(p) = has(&["libcamera", "v4l-utils", "libv4l"]) {
         add("camera", "To use the camera", format!("uses {p}"));
     }
+    // X11: for an interface that opens only there. VLC 3's Qt interface
+    // checks for an X server and gives up without one (VLC 4 draws on
+    // Wayland). And a program with X11 but no toolkit that speaks Wayland.
+    let wayland = has(&[
+        "gtk3",
+        "gtk4",
+        "qt5-wayland",
+        "qt6-base",
+        "sdl2",
+        "sdl2-compat",
+        "sdl3",
+        "glfw",
+        "electron*",
+    ]);
+    if let Some(p) = has(&["vlc-gui-qt", "vlc-gui-skins2"]) {
+        add(
+            "x11",
+            "Its interface opens only on X11",
+            format!("{p} needs an X server"),
+        );
+    } else if let (Some(p), None) = (has(&["libx11"]), wayland) {
+        add(
+            "x11",
+            "Its windows open only on X11",
+            format!("uses {p} and no toolkit for Wayland"),
+        );
+    }
     if mime_any(&[
         "text/",
         "application/pdf",
@@ -1150,6 +1177,21 @@ mod tests {
             ["network", "gpu", "notifications", "audio", "pictures"]
         );
         assert!(propose(&["glibc".into()], &[], &[]).is_empty());
+        // X11 only where the interface needs it.
+        let x11 = |c: &[&str]| {
+            let c: Vec<String> = c.iter().map(|s| s.to_string()).collect();
+            propose(&c, &[], &[]).iter().any(|p| p.id == "x11")
+        };
+        assert!(x11(&[
+            "vlc",
+            "vlc-gui-qt",
+            "qt5-base",
+            "qt5-wayland",
+            "libx11"
+        ]));
+        assert!(x11(&["xterm", "libx11"]));
+        assert!(!x11(&["gtk3", "libx11"]));
+        assert!(!x11(&["kcalc", "qt6-base", "libx11"]));
         // Every proposal is a known permission.
         for p in propose(
             &closure,
