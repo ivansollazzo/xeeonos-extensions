@@ -205,6 +205,16 @@ pub fn info(args: &[String]) -> Result<u8> {
 
 /// Names on the session bus that open much more than one application:
 /// the doctor warns before giving them.
+/// What `xapp doctor` adds for a finding: a name it took with a number
+/// that changes at each start stands for all of them (`a.b.C.*`).
+fn entry_of(f: &Finding) -> (&'static str, String) {
+    let (kind, value) = f.entry();
+    match f {
+        Finding::Own(n) => (kind, overrides::instance_pattern(n)),
+        _ => (kind, value.to_string()),
+    }
+}
+
 fn sensitive(name: &str) -> Option<&'static str> {
     perms::sensitive_bus_name(name)
 }
@@ -260,10 +270,10 @@ pub fn doctor(args: &[String]) -> Result<u8> {
         .findings
         .iter()
         .filter(|f| {
-            let (kind, value) = f.entry();
+            let (kind, value) = entry_of(f);
             !matches!(f, Finding::Wants(_))
                 && !f.is_missing()
-                && !extra.has(kind, value)
+                && !extra.has(kind, &value)
                 && !(**f == Finding::X11 && perms::has_capability(m, "x11"))
         })
         .collect();
@@ -283,6 +293,14 @@ pub fn doctor(args: &[String]) -> Result<u8> {
     let mut questions = Vec::new();
     for f in &open {
         let mut text = format!("{name} {}.", f.describe());
+        if let Finding::Own(n) = f
+            && let (_, pattern) = entry_of(f)
+            && pattern != *n
+        {
+            text.push_str(&format!(
+                "\n\nThe number changes at each start: {pattern} is allowed (its names)."
+            ));
+        }
         let default_yes = match f {
             Finding::Own(n) | Finding::Talk(n) | Finding::See(n) => match sensitive(n) {
                 Some(what) => {
@@ -339,8 +357,8 @@ pub fn doctor(args: &[String]) -> Result<u8> {
     let mut changed = 0;
     for (f, a) in open.iter().zip(&answers) {
         if a == "yes" {
-            let (kind, value) = f.entry();
-            overrides::add(&m.app_id, kind, value)?;
+            let (kind, value) = entry_of(f);
+            overrides::add(&m.app_id, kind, &value)?;
             changed += 1;
         }
     }
@@ -433,9 +451,7 @@ fn print_missing(name: &str, m: &xapp_format::Manifest, missing: &[&Finding]) {
     }
     if missing.iter().any(|f| matches!(f, Finding::Stopped(_))) {
         if m.multilib {
-            println!(
-                "A program made a call the sandbox never allows (see: coredumpctl list)."
-            );
+            println!("A program made a call the sandbox never allows (see: coredumpctl list).");
         } else {
             println!(
                 "32-bit programs run only in images built for them: build it again with this \

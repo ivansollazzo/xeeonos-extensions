@@ -107,9 +107,33 @@ pub fn valid_bus_name(name: &str) -> bool {
             .all(|part| !part.starts_with(|c: char| c.is_ascii_digit()))
 }
 
+/// A bus name, or a prefix wildcard `org.example.App.*`: the name and every
+/// name under it (xdg-dbus-proxy's own form; for names with a number that
+/// changes at each start, like `...Instance394`). The prefix must have at
+/// least three parts, so as not to cover a whole vendor (`org.kde.*`).
+pub fn valid_bus_pattern(name: &str) -> bool {
+    match name.strip_suffix(".*") {
+        Some(stem) => valid_bus_name(stem) && stem.split('.').count() >= 3,
+        None => valid_bus_name(name),
+    }
+}
+
+/// The name a bus name with a number that changes at each start stands
+/// for: `a.b.C.Instance394` -> `a.b.C.*` (others stay as they are).
+pub fn instance_pattern(name: &str) -> String {
+    if let Some((stem, last)) = name.rsplit_once('.')
+        && last.ends_with(|c: char| c.is_ascii_digit())
+        && last.starts_with(|c: char| c.is_ascii_alphabetic())
+        && valid_bus_pattern(&format!("{stem}.*"))
+    {
+        return format!("{stem}.*");
+    }
+    name.to_string()
+}
+
 fn valid(kind: &str, value: &str) -> bool {
     match kind {
-        "own" | "talk" | "see" => valid_bus_name(value),
+        "own" | "talk" | "see" => valid_bus_pattern(value),
         "capability" => crate::capability(value).is_some(),
         _ => false,
     }
@@ -157,6 +181,21 @@ mod tests {
         assert!(!valid_bus_name("org..x"));
         assert!(!valid_bus_name("org.1x"));
         assert!(!valid_bus_name("org.x;rm"));
+        assert!(!valid_bus_name("org.example.App.*"));
+        assert!(valid_bus_pattern("org.example.App.*"));
+        assert!(valid_bus_pattern("org.example.App"));
+        assert!(!valid_bus_pattern("org.kde.*"));
+        assert!(!valid_bus_pattern("org.example.*.App"));
+        assert!(!valid_bus_pattern("*"));
+        assert_eq!(
+            instance_pattern("com.steampowered.PressureVessel.LaunchAlongsideSteam.Instance394"),
+            "com.steampowered.PressureVessel.LaunchAlongsideSteam.*"
+        );
+        assert_eq!(
+            instance_pattern("org.mpris.MediaPlayer2.vlc"),
+            "org.mpris.MediaPlayer2.vlc"
+        );
+        assert_eq!(instance_pattern("org.kde.App2"), "org.kde.App2");
     }
 
     #[test]

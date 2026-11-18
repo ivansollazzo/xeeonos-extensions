@@ -405,6 +405,14 @@ e sono **chiesti all'utente** come gli altri, mai dati di default. Quelli
 delicati (portachiavi, systemd, Shell, KWin, ..., e `device:all`) sono
 segnati "attenzione" e `--yes` non li dà.
 
+I nomi del bus possono finire con `.*` (`dbus-own:com.example.Gioco.*`):
+il nome e tutti quelli sotto, come `--own=...*` di xdg-dbus-proxy. Serve
+alle app che prendono un nome con un numero diverso a ogni avvio (Steam:
+`...LaunchAlongsideSteam.Instance394`). Il prefisso deve avere almeno tre
+parti (mai `org.kde.*`), ed è delicato se copre un nome delicato.
+`xapp doctor`, per un nome rifiutato che finisce con un numero, propone
+direttamente il prefisso.
+
 **Alla prima apertura** i permessi in sospeso sono chiesti tutti insieme,
 in una lista a caselle (come tasksel): niente spuntato, l'utente spunta
 quello che permette (spazio) e conferma.
