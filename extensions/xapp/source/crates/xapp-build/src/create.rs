@@ -522,6 +522,38 @@ pub fn optional_wanted(description: &str) -> bool {
     .any(|k| d.contains(k))
 }
 
+/// The programs of Arch's `base` that its packages count on without
+/// naming them (Arch's rule: a package does not depend on what `base` has):
+/// the scripts that start an application call them (Steam's launcher
+/// unpacks itself with tar). Only the user's programs: not systemd, pacman
+/// or the kernel's tools.
+pub const BASE_TOOLS: &[&str] = &[
+    "bzip2",
+    "coreutils",
+    "file",
+    "findutils",
+    "gawk",
+    "gettext",
+    "grep",
+    "gzip",
+    "pciutils",
+    "procps-ng",
+    "psmisc",
+    "sed",
+    "tar",
+    "util-linux",
+    "xz",
+];
+
+/// The programs of `base` the application does not have yet.
+pub fn missing_base(closure: &[String], packages: &[String]) -> Vec<String> {
+    BASE_TOOLS
+        .iter()
+        .filter(|b| !closure.iter().chain(packages).any(|c| c == *b))
+        .map(|b| b.to_string())
+        .collect()
+}
+
 /// The package that sends ALSA to PipeWire, if the application needs it:
 /// it has the permission `audio` and plays sound only through ALSA
 /// (alsa-lib, but no PulseAudio or PipeWire library).
@@ -1582,6 +1614,21 @@ pub fn create(o: &Options) -> Result<PathBuf> {
         q.yes = Some(Question::ticks_answer(&ticked));
         questions.push(q);
     }
+    let base = missing_base(&f.closure, &f.packages);
+    if !base.is_empty() {
+        questions.push(Question::yes_no(
+            "xapp create: basic programs",
+            &format!(
+                "Arch packages count on the programs of a whole system (tar, sed, grep...) \
+                 without naming them, and the scripts that start applications call them. \
+                 Put those it does not have in the application?\n\n{}",
+                base.join(" ")
+            ),
+            "Put them in",
+            "Leave them out",
+            true,
+        ));
+    }
     let answers =
         ui::ask(&questions).ok_or_else(|| err("nobody to answer the wizard (use --yes)"))?;
     // The answers after the summary, in the order of the questions.
@@ -1605,6 +1652,14 @@ pub fn create(o: &Options) -> Result<PathBuf> {
                 packages.push(n.clone());
             }
         }
+    }
+    if !base.is_empty() && rest.next().is_some_and(|a| a == "yes") {
+        packages.extend(
+            base.iter()
+                .filter(|b| !packages.contains(b))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
     }
     let permissions = choose_permissions(&proposals, &given)?;
     // Sound for an application that speaks only ALSA: through PipeWire.
@@ -1995,5 +2050,22 @@ mod tests {
     #[test]
     fn ids_for_directories() {
         assert_eq!(id_from_url("", "myapp"), "org.xeeonos.app.myapp");
+    }
+
+    #[test]
+    fn base_programs() {
+        let closure: Vec<String> = ["glibc", "coreutils", "sed"].map(String::from).to_vec();
+        let packages = vec!["tar".to_string()];
+        let m = missing_base(&closure, &packages);
+        assert!(m.contains(&"grep".to_string()) && m.contains(&"gzip".to_string()));
+        assert!(
+            !m.iter()
+                .any(|p| p == "coreutils" || p == "sed" || p == "tar")
+        );
+        assert!(
+            !BASE_TOOLS
+                .iter()
+                .any(|p| ["systemd", "pacman", "linux"].contains(p))
+        );
     }
 }

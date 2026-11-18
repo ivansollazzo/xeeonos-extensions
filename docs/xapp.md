@@ -684,6 +684,7 @@ che c'è nella ricetta.
 | programmi a 32 bit che disegnano con OpenGL o Vulkan (o un loader `lib32-` nella chiusura) | i driver grafici a 32 bit (`lib32-mesa`, `lib32-vulkan-radeon`, `-intel`, `-nouveau`): XeeonOS non ne ha da prestare |
 | il permesso `audio`, ma solo ALSA (`alsa-lib` senza librerie di PulseAudio o PipeWire) | `pipewire-alsa`: nella sandbox non c'è la scheda audio, solo il socket di PipeWire |
 | quello che i programmi nominano (`/dev/video`, il portal Camera; `libpulse.so`, `libpipewire`, `libasound.so`) | i permessi `camera`, `audio` già spuntati nella lista |
+| programmi di `base` (`tar`, `sed`, `grep`, `gzip`, `findutils`...) che l'app non ha: per regola di Arch i pacchetti non li nominano, ma gli script di avvio li chiamano (Steam si scompatta con `tar`) | quelli mancanti, con una domanda (già sì); mai systemd, pacman o il kernel |
 
 Con `--url` (solo `https://`):
 
