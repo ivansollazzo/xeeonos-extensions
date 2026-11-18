@@ -145,6 +145,9 @@ pub fn info(args: &[String]) -> Result<u8> {
     if m.user_namespaces {
         println!("Sandbox:     makes its own inside (user namespaces)");
     }
+    if m.multilib {
+        println!("Programs:    32-bit too");
+    }
     for cap in &m.capabilities {
         let label = perms::capability(cap).map_or("unknown to this xapp", |c| c.label);
         println!("Needs:       {label}");

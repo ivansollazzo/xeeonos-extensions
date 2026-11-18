@@ -553,6 +553,15 @@ pub fn build(o: &Options) -> Result<PathBuf> {
             }
         );
     }
+    // 32-bit programs: the recipe's multilib, or a 32-bit loader in the
+    // image (an archive or a directory that brings its own).
+    let multilib = r.get("multilib").and_then(Value::as_bool).unwrap_or(false)
+        || files
+            .iter()
+            .any(|f| f.ends_with("/ld-linux.so.2") || f == "usr/lib32/ld-linux.so.2");
+    if multilib {
+        println!("32-bit programs inside: the sandbox lets them run");
+    }
     // Capabilities: from the recipe, then from the image.
     let mut capabilities = list(&r, "capabilities");
     for c in &capabilities {
@@ -628,6 +637,7 @@ pub fn build(o: &Options) -> Result<PathBuf> {
             Gpu::Host
         },
         user_namespaces,
+        multilib,
         capabilities,
         glibc: info("glibc"),
         libstdcxx: info("libstdcxx"),

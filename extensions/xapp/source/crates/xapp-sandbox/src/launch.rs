@@ -257,7 +257,7 @@ pub fn run(l: &Launch) -> Result<i32> {
         );
     }
     let filter = instance.0.join("seccomp.bpf");
-    fs::write(&filter, seccomp::bytes(nested))?;
+    fs::write(&filter, seccomp::bytes(nested, m.multilib))?;
 
     // systemd-run --user --scope ... [systemd-cat -t xapp-<id>]
     //   sh -c 'exec bwrap --seccomp 9 "$@" 9<"$0"' <filter> <bwrap args> -- <command>

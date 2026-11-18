@@ -251,7 +251,12 @@ Altre protezioni:
   rifiuta ptrace, mount, moduli del kernel, kexec, keyring, BPF, perf,
   unshare, setns, clone con `CLONE_NEWUSER`, cambio dell'ora, swap, reboot,
   `TIOCSTI` e altro. clone3 risponde "non supportato", così glibc ripiega su
-  clone, di cui il filtro vede i flag. I programmi i386/x32 vengono fermati.
+  clone, di cui il filtro vede i flag. I programmi x32 vengono fermati; quelli
+  i386 anche, a meno che l'app abbia programmi a 32 bit (`multilib` nel
+  manifest: dalla ricetta, o perché l'immagine ha un loader a 32 bit). Allora
+  le loro chiamate passano per le stesse regole, con i numeri i386, come fa
+  il multiarch di Flatpak. Senza questo Steam, Wine e ogni programma a 32
+  bit morivano con SIGSYS.
 - **Sandbox propria dentro la nostra** (`user_namespaces` nel manifest):
   Chromium, Electron, CEF, WebKitGTK e Qt WebEngine isolano le proprie
   pagine con i namespace utente, e senza non partono. Non è un permesso e
@@ -594,6 +599,8 @@ Una **ricetta** è una cartella con `recipe.json`:
 - `multilib`: `true` aggiunge il repository multilib dello stesso
   snapshot (pacchetti a 32 bit, `lib32-*`, e app che ne hanno bisogno).
   La build fa solo quello che dice la ricetta; è il wizard a proporlo.
+  Il manifest lo riporta (anche quando l'immagine porta un suo loader a
+  32 bit) e la sandbox lascia girare i programmi i386.
 
 `xapp build <ricetta>`:
 
