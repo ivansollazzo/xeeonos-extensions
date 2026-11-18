@@ -181,6 +181,32 @@ fn image_from_root(root: &Path, recipe_dir: &Path, icon: &str, out: &Path) -> Re
     Ok(())
 }
 
+/// What the archives in the image hold (launchers that unpack themselves
+/// when they start): their files, and those that are 32-bit programs or
+/// programs that draw only on X11, as "<archive>!<path>".
+#[derive(Default, Debug, PartialEq)]
+pub struct Inner {
+    pub files: Vec<String>,
+    pub elf32: Vec<String>,
+    pub x11: Vec<String>,
+}
+
+impl Inner {
+    /// build-root.sh's inner.txt: "file|elf32|x11 <archive>!<path>" lines.
+    pub fn parse(text: &str) -> Inner {
+        let mut i = Inner::default();
+        for line in text.lines() {
+            match line.split_once(' ') {
+                Some(("file", f)) => i.files.push(f.into()),
+                Some(("elf32", f)) => i.elf32.push(f.into()),
+                Some(("x11", f)) => i.x11.push(f.into()),
+                _ => {}
+            }
+        }
+        i
+    }
+}
+
 /// Files that tell that the application makes its own sandbox with user
 /// namespaces, and would not start without them: (file name, what it is).
 const OWN_SANDBOX: &[(&str, &str)] = &[
@@ -541,7 +567,9 @@ pub fn build(o: &Options) -> Result<PathBuf> {
             .map(String::from)
             .collect(),
     };
-    let found = own_sandbox(files.iter().map(String::as_str));
+    // What the archives in the image hold (build-root.sh inner_report).
+    let inner = Inner::parse(&fs::read_to_string(out.join("inner.txt")).unwrap_or_default());
+    let found = own_sandbox(files.iter().chain(&inner.files).map(String::as_str));
     let user_namespaces = match r.get("user_namespaces").and_then(Value::as_bool) {
         Some(v) => v,
         None => found.is_some(),
@@ -561,7 +589,8 @@ pub fn build(o: &Options) -> Result<PathBuf> {
     let multilib = r.get("multilib").and_then(Value::as_bool).unwrap_or(false)
         || files
             .iter()
-            .any(|f| f.ends_with("/ld-linux.so.2") || f == "usr/lib32/ld-linux.so.2");
+            .any(|f| f.ends_with("/ld-linux.so.2") || f == "usr/lib32/ld-linux.so.2")
+        || !inner.elf32.is_empty();
     if multilib {
         println!("32-bit programs inside: the sandbox lets them run");
     }
@@ -580,9 +609,15 @@ pub fn build(o: &Options) -> Result<PathBuf> {
         capabilities.push("x11".into());
     }
     if !capabilities.iter().any(|c| c == "x11")
-        && let Some(why) = needs_x11(files.iter().map(String::as_str))
+        && let Some(why) = needs_x11(files.iter().chain(&inner.files).map(String::as_str))
     {
         println!("X11 windows given ({why})");
+        capabilities.push("x11".into());
+    }
+    if !capabilities.iter().any(|c| c == "x11")
+        && let Some(program) = inner.x11.first()
+    {
+        println!("X11 windows given ({program} links to X11 and not to Wayland)");
         capabilities.push("x11".into());
     }
     let info = read_kv(&out.join("info"));
@@ -826,5 +861,19 @@ mod tests {
         }
         assert!(valid_aur_name("libc++"));
         assert!(!valid_aur_name("../x"));
+    }
+
+    #[test]
+    fn archives_inside() {
+        let i = Inner::parse(
+            "file usr/lib/steam/boot.tar.xz!ubuntu12_32/steam\n\
+             elf32 usr/lib/steam/boot.tar.xz!ubuntu12_32/steam\n\
+             x11 usr/lib/steam/boot.tar.xz!ubuntu12_32/steam\n\
+             file usr/lib/x.tar!opt/chrome-sandbox\n",
+        );
+        assert_eq!(i.files.len(), 2);
+        assert_eq!(i.elf32, ["usr/lib/steam/boot.tar.xz!ubuntu12_32/steam"]);
+        assert_eq!(i.x11.len(), 1);
+        assert!(own_sandbox(i.files.iter().map(String::as_str)).is_some());
     }
 }

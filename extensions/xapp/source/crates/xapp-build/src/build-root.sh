@@ -28,7 +28,7 @@ mkdir -p "$root" "$out"
 # The tools of this container (current Arch): pacstrap and mkfs.erofs.
 pacman-key --init >/dev/null
 pacman-key --populate archlinux >/dev/null
-pacman -Syu --noconfirm --needed arch-install-scripts erofs-utils >/dev/null
+pacman -Syu --noconfirm --needed arch-install-scripts erofs-utils binutils >/dev/null
 
 # The application's packages: from the snapshot only.
 cat > /tmp/pacman.conf <<CONF
@@ -219,6 +219,9 @@ cp "$out/packages.txt" ./xapp/packages.txt
 # Every file of the image, for xapp build (it looks for programs that make
 # their own sandbox: Chromium, Electron, WebKitGTK, Qt WebEngine).
 find . -mindepth 1 ! -type d -printf '%P\n' > "$out/files.txt"
+# What the archives in it hold (launchers that unpack themselves): their
+# files, 32-bit programs, programs that draw only on X11 (scan.sh).
+inner_report . "$out/files.txt" > "$out/inner.txt"
 cd /work
 
 # Read-only image, compressed (lz4hc: small and fast to read), with fixed

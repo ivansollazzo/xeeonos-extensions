@@ -14,8 +14,13 @@
 #   /tmp/elf32                   the 32-bit ones
 #   /tmp/hints                   "permission what": what a permission gives,
 #                                named in them (camera /dev/video, audio libpulse.so)
+#
+# Archives among them (launchers that unpack themselves when they start,
+# like Steam's bootstrap) are opened and their files looked at the same
+# way, as "<archive>!<path>"; the libraries an archive brings itself do
+# not count as needed.
 scan_files() {
-    local root=$1 list=$2 f p class lib
+    local root=$1 list=$2 a d n o
     : > /tmp/needed
     : > /tmp/needed32
     : > /tmp/named
@@ -23,6 +28,41 @@ scan_files() {
     : > /tmp/programs
     : > /tmp/elf32
     : > /tmp/hints
+    scan_list "$root" "$list" ""
+    n=0
+    while IFS= read -r a; do
+        n=$((n + 1))
+        [[ $n -le 20 ]] || break
+        d=$(mktemp -d)
+        if bsdtar -xf "$root/$a" -C "$d" 2>/dev/null; then
+            (cd "$d" && find . -type f -printf '%P\n') > /tmp/inner.list
+            sed 's|.*/||' /tmp/inner.list | sort -u > /tmp/inner.own
+            for o in needed needed32 named named32; do mv "/tmp/$o" "/tmp/$o.outer"; : > "/tmp/$o"; done
+            scan_list "$d" /tmp/inner.list "$a!"
+            for o in needed needed32 named named32; do
+                sort -u "/tmp/$o" | comm -23 - /tmp/inner.own >> "/tmp/$o.outer"
+                mv "/tmp/$o.outer" "/tmp/$o"
+            done
+        fi
+        rm -rf "$d"
+    done < <(archives_in "$root" "$list")
+    sort -u -o /tmp/hints /tmp/hints
+}
+
+# archives_in <root> <file list>: the archives among them worth opening
+# (tar, zip; more than 100 KiB; not documentation).
+archives_in() {
+    local f
+    grep -E '\.(tar|tar\.(xz|gz|bz2|zst)|tgz|txz|zip)$' "$2" | grep -vE '^usr/share/(doc|help|licenses)/' |
+        while IFS= read -r f; do
+            [[ -f $1/$f && ! -L $1/$f && $(stat -c %s "$1/$f") -gt 102400 ]] && echo "$f"
+        done || true
+}
+
+# scan_list <root> <file list> <prefix>: scan_files without the archives;
+# the files are noted as <prefix><path>.
+scan_list() {
+    local root=$1 list=$2 pre=$3 f p class lib
     while IFS= read -r f; do
         p=$root/$f
         [[ -f $p && ! -L $p ]] || continue
@@ -30,7 +70,7 @@ scan_files() {
         # The fifth byte of an ELF file: 1 for 32-bit, 2 for 64-bit.
         class=$(od -An -tu1 -j4 -N1 "$p" | tr -d ' ')
         if [[ $class == 1 ]]; then
-            echo "$f" >> /tmp/elf32
+            echo "$pre$f" >> /tmp/elf32
             readelf -d "$p" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' >> /tmp/needed32
             strings -a "$p" | grep -oE '^lib[A-Za-z0-9_+-]+\.so(\.[0-9]+)*$' >> /tmp/named32 || true
         else
@@ -38,7 +78,8 @@ scan_files() {
             strings -a "$p" | grep -oE '^lib[A-Za-z0-9_+-]+\.so(\.[0-9]+)*$' >> /tmp/named || true
         fi
         if readelf -l "$p" 2>/dev/null | grep -q 'INTERP' && [[ -x $p ]]; then
-            echo "$f" >> /tmp/programs
+            # (Not those inside an archive: they are not started as they are.)
+            [[ -n $pre ]] || echo "$f" >> /tmp/programs
         fi
         # What a permission gives, named in the program (even one that
         # brings everything itself: Electron opens the camera and loads the
@@ -51,7 +92,6 @@ scan_files() {
             if grep -aqsF "$lib" "$p"; then echo "audio $lib" >> /tmp/hints; fi
         done
     done < "$list"
-    sort -u -o /tmp/hints /tmp/hints
 }
 
 # owners_of <dir> <file of library names>: "library package" for the ones a
@@ -179,4 +219,30 @@ host_only() {
               if (!(($1, w) in got)) { got[$1, w] = 1; what[$1] = what[$1] (what[$1] ? ", " : "") w }
           } else other[$1]++ }
         END { for (k in seen) if (h[k] > 0 && !other[k]) printf "%s\t%s\n", k, what[k] }' | sort
+}
+
+# inner_report <root> <file list>: for xapp build, what the archives in the
+# image hold, one line each: "file <archive>!<path>" (for the signs of a
+# sandbox of its own), "elf32 <archive>!<path>" (32-bit programs: the
+# sandbox must let them run), "x11 <archive>!<path>" (a program that links
+# to X11 and not to Wayland: it opens its windows only on X11).
+inner_report() {
+    local root=$1 list=$2 a d f p needs
+    while IFS= read -r a; do
+        d=$(mktemp -d)
+        if bsdtar -xf "$root/$a" -C "$d" 2>/dev/null; then
+            while IFS= read -r f; do
+                echo "file $a!$f"
+                p=$d/$f
+                [[ -f $p && ! -L $p ]] || continue
+                [[ $(head -c4 "$p" | od -An -tx1 | tr -d ' \n') == 7f454c46 ]] || continue
+                [[ $(od -An -tu1 -j4 -N1 "$p" | tr -d ' ') == 1 ]] && echo "elf32 $a!$f"
+                needs=$(readelf -d "$p" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
+                if grep -qE '^lib(X11|xcb)\.so' <<< "$needs" && ! grep -q '^libwayland-client\.so' <<< "$needs"; then
+                    echo "x11 $a!$f"
+                fi
+            done < <(cd "$d" && find . -type f -printf '%P\n')
+        fi
+        rm -rf "$d"
+    done < <(archives_in "$root" "$list" | head -n 20)
 }
