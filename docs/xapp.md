@@ -469,7 +469,8 @@ Se un'app non parte o non fa qualcosa, non si indovina:
 
 ```
 xapp run --trace <app>     avvia e nota cosa la sandbox rifiuta
-xapp doctor <app>          propone di permettere quello che è stato rifiutato
+xapp doctor <app>          propone di permettere quello che è stato rifiutato,
+                           e i pacchetti di quello che mancava
 ```
 
 Con `--trace` il filtro del bus scrive ogni messaggio (`xdg-dbus-proxy
@@ -480,6 +481,29 @@ rifiutate al portal Camera o alle notifiche contano come "voleva la
 fotocamera" o "voleva le notifiche". Alla fine il resoconto (codice di
 uscita, durata, nomi del bus rifiutati, X11, permessi voluti) va in
 `~/.local/state/xapps/trace/<id>` e viene stampato.
+
+Il resoconto nota anche quello che all'app **manca** e che nessun permesso
+può dare, perché lo deve dare la ricetta:
+
+- quello che l'app scrive sullo standard error (che resta visibile come
+  sempre): `tar: command not found` (anche `sh: 1: zenity: not found`),
+  `error while loading shared libraries: libnss3.so`, e gli errori di chi
+  prova a farsi una sandbox sua senza `user_namespaces` ("No usable
+  sandbox", "setting up uid map", ...);
+- i programmi fermati dal filtro di sistema: `coredumpctl` dopo l'avvio,
+  i processi dell'utente morti con `SIGSYS` (per esempio un programma a 32
+  bit in un'immagine costruita senza `multilib`).
+
+`xapp run --trace` li stampa a parte ("it missed") dai rifiuti.
+`xapp doctor` non li chiede: cerca nello snapshot dell'app (lo stesso
+database dei file di `pacman -F` che usa il wizard, in un container) i
+pacchetti che hanno `usr/bin/<comando>` o `usr/lib{,32}/<libreria>`, li
+mostra (quelli per hardware che XeeonOS non guida solo se non c'è altro), e
+dice quali aggiungere a `"packages"` nella ricetta prima di ricostruirla;
+per le sandbox proprie suggerisce `"user_namespaces": true`, per i
+programmi fermati `"multilib"`. Vale per tutte le sorgenti del wizard (Arch,
+AUR, URL, cartella): la ricetta ha sempre il suo snapshot e la lista
+`packages`.
 
 `xapp doctor` chiede, una cosa per volta, se permettere ciascuna di quelle
 cose (e i permessi che l'utente aveva negato). Un permesso voluto ma non
@@ -770,7 +794,8 @@ xapp permissions <app> [<permesso> yes|no|ask | --reset]
                                           dichiarato); --reset: dimentica le scelte
 xapp permissions --all [<permesso> yes|no|ask]
                                           lo stesso per tutte le app
-xapp doctor <app> [--reset]               permette quello che --trace ha visto rifiutare
+xapp doctor <app> [--reset]               permette quello che --trace ha visto rifiutare,
+                                          e trova i pacchetti di quello che mancava
 xapp logs <app> [-f]                      i messaggi dell'app (journal)
 xapp ps                                   le app aperte: pid, da quanto, memoria
 xapp kill <app>                           chiude l'app (tutte le sue finestre e processi)

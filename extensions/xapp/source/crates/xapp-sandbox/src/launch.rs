@@ -4,8 +4,9 @@
 //! which application is talking), wait for it, clean up.
 
 use std::fs;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use xapp_core::paths;
 use xapp_core::util::{Result, err, gid, have, uid};
@@ -287,7 +288,9 @@ pub fn run(l: &Launch) -> Result<i32> {
     // Started from the menu, the output goes to the journal through a
     // socket: give it the application's name there (`xapp logs`). On a
     // terminal or into a pipe it stays where it is.
-    if stdout_is_socket()
+    // (Not while tracing: what it says is read for the report.)
+    if !l.trace
+        && stdout_is_socket()
         && have("systemd-cat")
         && std::path::Path::new("/run/systemd/journal/stdout").exists()
     {
@@ -312,10 +315,39 @@ pub fn run(l: &Launch) -> Result<i32> {
         eprintln!("xapp: {}", cmd.join(" "));
     }
     let started = std::time::Instant::now();
-    let status = Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .status()
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut command = Command::new(&cmd[0]);
+    command.args(&cmd[1..]);
+    // Tracing: what it writes on standard error still goes there, and is
+    // kept to see what it missed.
+    if l.trace {
+        command.stderr(Stdio::piped());
+    }
+    let mut child = command
+        .spawn()
         .map_err(|e| err(format!("cannot start {}: {e}", cmd[0])))?;
+    let said = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut kept = Vec::new();
+            let mut buf = [0u8; 8192];
+            let mut to = std::io::stderr();
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let _ = to.write_all(&buf[..n]);
+                // The first 4 MiB are enough to read.
+                if kept.len() < 4 << 20 {
+                    kept.extend_from_slice(&buf[..n]);
+                }
+            }
+            String::from_utf8_lossy(&kept).into_owned()
+        })
+    });
+    let status = child.wait()?;
     let code = status.code().unwrap_or(1);
     drop(proxy);
     if l.trace {
@@ -331,6 +363,34 @@ pub fn run(l: &Launch) -> Result<i32> {
                 &fs::read_to_string(log).unwrap_or_default(),
             ));
         }
+        // Programs that run on after it (in the background) may still hold
+        // the pipe: what was said until now is enough.
+        if let Some(said) = said
+            && (0..20).any(|_| {
+                let done = said.is_finished();
+                if !done {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                done
+            })
+            && let Ok(text) = said.join()
+        {
+            findings.extend(trace::parse_output(&text, nested));
+        }
+        // Programs the system filter stopped dump core with SIGSYS.
+        if have("coredumpctl")
+            && let Ok(out) = Command::new("coredumpctl")
+                .args(["list", "--no-pager", "--no-legend", "--quiet"])
+                .arg(format!("--since=@{since}"))
+                .stderr(Stdio::null())
+                .output()
+        {
+            findings.extend(trace::parse_coredumps(
+                &String::from_utf8_lossy(&out.stdout),
+                uid(),
+            ));
+        }
+        findings.dedup();
         trace::save(&Report {
             app_id: m.app_id.clone(),
             code,

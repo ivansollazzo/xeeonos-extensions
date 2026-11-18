@@ -42,6 +42,7 @@ use xapp_core::util::{Result, err, gid, uid, valid_app_id};
 const ARCH_SCRIPT: &str = include_str!("create-arch.sh");
 const URL_SCRIPT: &str = include_str!("create-url.sh");
 const AUR_SCRIPT: &str = include_str!("create-aur.sh");
+const OWNERS_SCRIPT: &str = include_str!("owners.sh");
 
 /// Where the application comes from.
 pub enum Source {
@@ -934,6 +935,42 @@ fn in_container(
         return Err(err(format!("{what}: failed ({status})")));
     }
     Ok(())
+}
+
+/// Which packages of a snapshot ("YYYY-MM-DD" or "YYYY/MM/DD") have these
+/// files ("usr/bin/tar"): "file package" pairs, from the snapshot's files
+/// database (`pacman -F`, in a container). For `xapp doctor`.
+pub fn owners(snapshot: &str, files: &[String]) -> Result<Vec<(String, String)>> {
+    let work = std::env::temp_dir().join(format!("xapp-owners-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&work);
+    fs::create_dir_all(&work)?;
+    let mut want = files.join("\n");
+    want.push('\n');
+    fs::write(work.join("want.txt"), want)?;
+    let snapshot = snapshot.replace('-', "/");
+    let found = in_container(
+        &work,
+        "owners.sh",
+        OWNERS_SCRIPT,
+        &[&snapshot],
+        "Looking in the packages of the snapshot",
+        Run::default(),
+    )
+    .map(|()| tab_pairs(&work, "owners.txt"));
+    let _ = fs::remove_dir_all(&work);
+    found
+}
+
+/// Of the packages that have a file, the ones to propose: those for
+/// hardware XeeonOS drives (others only if there is nothing else).
+pub fn ours(candidates: &[String]) -> Vec<String> {
+    let foreign = |c: &str| FOREIGN_HARDWARE.iter().any(|f| c.contains(f));
+    let mine: Vec<String> = candidates.iter().filter(|c| !foreign(c)).cloned().collect();
+    if mine.is_empty() {
+        candidates.to_vec()
+    } else {
+        mine
+    }
 }
 
 /// The lines of a file of work/ (none if it is missing).
@@ -2196,5 +2233,8 @@ mod tests {
         );
         let fonts: Vec<String> = ["gnu-free-fonts", "noto-fonts"].map(String::from).to_vec();
         assert_eq!(order_providers(&fonts, &[])[0], "gnu-free-fonts");
+        assert_eq!(ours(&c), ["vulkan-intel", "vulkan-radeon"]);
+        let only: Vec<String> = vec!["nvidia-utils".into()];
+        assert_eq!(ours(&only), only);
     }
 }

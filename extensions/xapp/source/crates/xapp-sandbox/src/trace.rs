@@ -10,6 +10,11 @@
 //!   - permissions: sound (a fake PipeWire and PulseAudio server, the same
 //!     way), the camera and notifications (their calls on the bus).
 //!
+//!   - what the application said when something it counts on was not
+//!     there: a command not found, a library that could not be loaded, a
+//!     sandbox of its own it could not make;
+//!   - programs the system filter stopped (SIGSYS, from coredumpctl).
+//!
 //! The report (~/.local/state/xapps/trace/<app id>) is what `xapp doctor`
 //! reads to offer the missing pieces.
 
@@ -35,6 +40,14 @@ pub enum Finding {
     X11,
     /// Something a permission gives (its id: audio, camera, notifications).
     Wants(String),
+    /// A command the application ran and the image does not have.
+    Command(String),
+    /// A library a program could not load.
+    Library(String),
+    /// A program the system filter stopped (SIGSYS): its path.
+    Stopped(String),
+    /// The application could not make its own sandbox (user namespaces).
+    Namespaces,
 }
 
 impl Finding {
@@ -46,7 +59,20 @@ impl Finding {
             Finding::See(n) => ("see", n),
             Finding::X11 => ("capability", "x11"),
             Finding::Wants(p) => ("wants", p),
+            Finding::Command(c) => ("command", c),
+            Finding::Library(l) => ("library", l),
+            Finding::Stopped(e) => ("stopped", e),
+            Finding::Namespaces => ("namespaces", "yes"),
         }
+    }
+
+    /// Something missing from the image or the recipe (not a refusal the
+    /// user can lift with a permission).
+    pub fn is_missing(&self) -> bool {
+        matches!(
+            self,
+            Finding::Command(_) | Finding::Library(_) | Finding::Stopped(_) | Finding::Namespaces
+        )
     }
 
     fn from_entry(kind: &str, value: &str) -> Option<Finding> {
@@ -58,6 +84,10 @@ impl Finding {
             "wants" if xapp_permissions::info(value).is_some() => {
                 Some(Finding::Wants(value.into()))
             }
+            "command" if plain_name(value) => Some(Finding::Command(value.into())),
+            "library" if plain_name(value) => Some(Finding::Library(value.into())),
+            "stopped" if value.starts_with('/') => Some(Finding::Stopped(value.into())),
+            "namespaces" => Some(Finding::Namespaces),
             _ => None,
         }
     }
@@ -73,8 +103,101 @@ impl Finding {
                 "wanted what the permission \"{p}\" gives: {}",
                 xapp_permissions::label(p)
             ),
+            Finding::Command(c) => format!("ran the command {c}, which is not in its image"),
+            Finding::Library(l) => format!("could not load the library {l}"),
+            Finding::Stopped(e) => {
+                format!("{e} was stopped by the system filter (a call it may not make)")
+            }
+            Finding::Namespaces => "could not make a sandbox of its own (user namespaces)".into(),
         }
     }
+}
+
+/// A command or library name: no path, no spaces, nothing odd.
+fn plain_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && !s.starts_with(['.', '-'])
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c))
+}
+
+/// What the application said, when it says something it counts on is not
+/// there:
+///
+///   steam.sh: line 12: tar: command not found
+///   /usr/bin/foo: 3: zenity: not found
+///   ./app: error while loading shared libraries: libnss3.so: cannot open shared object file
+///   bwrap: setting up uid map: Permission denied
+///
+/// `nested`: the sandbox lets it make its own (namespace errors are then
+/// something else).
+pub fn parse_output(text: &str, nested: bool) -> Vec<Finding> {
+    let mut out: Vec<Finding> = Vec::new();
+    let mut add = |f: Finding| {
+        if !out.contains(&f) {
+            out.push(f);
+        }
+    };
+    const NAMESPACES: &[&str] = &[
+        "No usable sandbox",
+        "setting up uid map",
+        "Creating new namespace failed",
+        "No permissions to create new namespace",
+        "Failed to move to new namespace",
+        "unshare(CLONE_NEWUSER)",
+        "cannot create user namespace",
+        "Failed to create user namespace",
+    ];
+    for line in text.lines() {
+        let line = line.trim();
+        for end in [": command not found", ": not found"] {
+            if let Some(rest) = line.strip_suffix(end) {
+                let cmd = rest.rsplit(": ").next().unwrap_or_default().trim();
+                let cmd = cmd.rsplit('/').next().unwrap_or_default();
+                if plain_name(cmd) {
+                    add(Finding::Command(cmd.into()));
+                }
+                break;
+            }
+        }
+        if let Some((_, rest)) = line.split_once("error while loading shared libraries: ")
+            && let Some((lib, _)) = rest.split_once(':')
+            && plain_name(lib.trim())
+        {
+            add(Finding::Library(lib.trim().into()));
+        }
+        if !nested && NAMESPACES.iter().any(|n| line.contains(n)) {
+            add(Finding::Namespaces);
+        }
+    }
+    out
+}
+
+/// Programs of the user stopped by SIGSYS, from `coredumpctl list
+/// --no-legend` lines:
+///
+///   Wed 2026-11-18 15:31:57 EST 2245 1000 1000 SIGSYS present /usr/lib32/ld-linux.so.2 9.6K
+pub fn parse_coredumps(text: &str, uid: u32) -> Vec<Finding> {
+    let mut out: Vec<Finding> = Vec::new();
+    for line in text.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let Some(i) = words.iter().position(|w| *w == "SIGSYS") else {
+            continue;
+        };
+        if i < 2 || words.get(i - 2) != Some(&uid.to_string().as_str()) {
+            continue;
+        }
+        if let Some(exe) = words.get(i + 2)
+            && exe.starts_with('/')
+        {
+            let f = Finding::Stopped((*exe).into());
+            if !out.contains(&f) {
+                out.push(f);
+            }
+        }
+    }
+    out
 }
 
 /// What xdg-dbus-proxy --log says was refused:
@@ -292,6 +415,42 @@ C13: -> org.freedesktop.portal.Desktop call org.freedesktop.portal.Wallpaper.Set
     }
 
     #[test]
+    fn reads_what_it_said() {
+        let text = "\
+steam.sh: line 12: tar: command not found
+/usr/bin/foo: 3: zenity: not found
+./app: error while loading shared libraries: libnss3.so: cannot open shared object file: No such file or directory
+bwrap: setting up uid map: Permission denied
+sh: 1: /usr/bin/xdg-open: not found
+everything is fine: not found here
+";
+        assert_eq!(
+            parse_output(text, false),
+            [
+                Finding::Command("tar".into()),
+                Finding::Command("zenity".into()),
+                Finding::Library("libnss3.so".into()),
+                Finding::Namespaces,
+                Finding::Command("xdg-open".into()),
+            ]
+        );
+        assert!(!parse_output(text, true).contains(&Finding::Namespaces));
+    }
+
+    #[test]
+    fn reads_coredumps() {
+        let text = "\
+Wed 2026-11-18 15:31:57 EST 2245 1000 1000 SIGSYS present  /usr/lib32/ld-linux.so.2 9.6K
+Wed 2026-11-18 15:31:58 EST 2246 1001 1001 SIGSYS present  /usr/bin/other 9.6K
+Wed 2026-11-18 15:31:59 EST 2247 1000 1000 SIGSEGV present  /usr/bin/crash 9.6K
+";
+        assert_eq!(
+            parse_coredumps(text, 1000),
+            [Finding::Stopped("/usr/lib32/ld-linux.so.2".into())]
+        );
+    }
+
+    #[test]
     fn report_round_trip() {
         let r = Report {
             app_id: "org.xeeonos.arch.vlc".into(),
@@ -301,6 +460,10 @@ C13: -> org.freedesktop.portal.Desktop call org.freedesktop.portal.Wallpaper.Set
                 Finding::X11,
                 Finding::Own("org.mpris.MediaPlayer2.vlc".into()),
                 Finding::Wants("audio".into()),
+                Finding::Command("tar".into()),
+                Finding::Library("libc.so.6".into()),
+                Finding::Stopped("/usr/lib32/ld-linux.so.2".into()),
+                Finding::Namespaces,
             ],
         };
         let pairs = r
