@@ -86,6 +86,8 @@ jobs:
               --work "$RUNNER_TEMP/work-multilib" --no-install
           "$XAPP" verify "$OUT/multilib.xapp"
           grep -q '^lib32-zstd ' "$RUNNER_TEMP/work-multilib/out/packages.txt"
+          # Its 32-bit programs may run: the manifest says so.
+          "$XAPP" info "$OUT/multilib.xapp" | grep -q "32-bit too"
 
       - name: Heuristics (only what the files say, no list of applications)
         run: |
@@ -104,6 +106,10 @@ jobs:
           jq -e '.multilib == true' "$OUT/steam-recipe/recipe.json"
           # lib32-mesa comes with steam itself; the 32-bit Vulkan drivers not.
           jq -e '.packages | index("lib32-vulkan-radeon") != null' "$OUT/steam-recipe/recipe.json"
+          # The programs of base Arch packages count on (its script runs tar).
+          jq -e '.packages | index("tar") != null' "$OUT/steam-recipe/recipe.json"
+          # Virtual packages chosen by the wizard, never NVIDIA's by itself.
+          jq -e '.packages | index("nvidia-utils") == null' "$OUT/steam-recipe/recipe.json"
 
       - name: --aur without reading the PKGBUILD is refused
         run: |
