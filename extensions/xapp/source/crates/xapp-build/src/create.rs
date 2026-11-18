@@ -42,8 +42,6 @@ use xapp_core::util::{Result, err, gid, uid, valid_app_id};
 const ARCH_SCRIPT: &str = include_str!("create-arch.sh");
 const URL_SCRIPT: &str = include_str!("create-url.sh");
 const AUR_SCRIPT: &str = include_str!("create-aur.sh");
-/// Shared by the scripts above: what the files of an application say.
-const SCAN_LIB: &str = include_str!("scan.sh");
 
 /// Where the application comes from.
 pub enum Source {
@@ -522,6 +520,44 @@ pub fn optional_wanted(description: &str) -> bool {
     .any(|k| d.contains(k))
 }
 
+/// Drivers and runtimes for hardware XeeonOS does not drive (NVIDIA, CUDA,
+/// ROCm, the GPUs of phones and boards, Windows' D3D12): never chosen first.
+const FOREIGN_HARDWARE: &[&str] = &[
+    "nvidia",
+    "cuda",
+    "rocm",
+    "hip-",
+    "asahi",
+    "broadcom",
+    "freedreno",
+    "panfrost",
+    "powervr",
+    "dzn",
+    "gfxstream",
+    "amdgpu-pro",
+    "opencl-",
+];
+
+/// The candidates for a virtual package in the order to propose them: one
+/// the application already has first (it comes anyway), then those for
+/// hardware XeeonOS drives, in pacman's order; foreign hardware last.
+pub fn order_providers(candidates: &[String], have: &[String]) -> Vec<String> {
+    let foreign = |c: &str| FOREIGN_HARDWARE.iter().any(|f| c.contains(f));
+    let mut out: Vec<String> = candidates
+        .iter()
+        .filter(|c| have.contains(c))
+        .cloned()
+        .collect();
+    for pass in [false, true] {
+        for c in candidates {
+            if foreign(c) == pass && !out.contains(c) {
+                out.push(c.clone());
+            }
+        }
+    }
+    out
+}
+
 /// The programs of Arch's `base` that its packages count on without
 /// naming them (Arch's rule: a package does not depend on what `base` has):
 /// the scripts that start an application call them (Steam's launcher
@@ -843,6 +879,11 @@ struct Found {
     gpu32: Vec<String>,
     /// The package's optional dependencies (name, what for), to propose.
     optdeps: Vec<(String, String)>,
+    /// Virtual packages pacman would choose a package for by itself:
+    /// (virtual, candidates, its default first).
+    providers: Vec<(String, Vec<String>)>,
+    /// Packages whose files only the system can use: (package, what).
+    host_only: Vec<(String, String)>,
     /// More lines for the summary.
     notes: Vec<String>,
 }
@@ -866,7 +907,7 @@ fn in_container(
     how: Run,
 ) -> Result<()> {
     fs::write(work.join(script), body)?;
-    fs::write(work.join("scan.sh"), SCAN_LIB)?;
+    fs::write(work.join("scan.sh"), crate::SCAN_LIB)?;
     let engine = crate::engine()?;
     let mut cmd = Command::new(&engine);
     cmd.args(["run", "--rm"])
@@ -901,6 +942,30 @@ fn lines_of(work: &Path, f: &str) -> Vec<String> {
         .unwrap_or_default()
         .lines()
         .map(String::from)
+        .collect()
+}
+
+/// "a<TAB>b" lines of a file of work/.
+fn tab_pairs(work: &Path, f: &str) -> Vec<(String, String)> {
+    non_empty_lines(work, f)
+        .iter()
+        .filter_map(|l| {
+            let (a, b) = l.split_once('\t')?;
+            Some((a.to_string(), b.to_string()))
+        })
+        .collect()
+}
+
+/// work/providers.txt: "virtual candidate..." lines.
+fn providers_in(work: &Path) -> Vec<(String, Vec<String>)> {
+    non_empty_lines(work, "providers.txt")
+        .iter()
+        .filter_map(|l| {
+            let mut w = l.split_whitespace().map(String::from);
+            let v = w.next()?;
+            let c: Vec<String> = w.collect();
+            (!c.is_empty()).then_some((v, c))
+        })
         .collect()
 }
 
@@ -1109,13 +1174,9 @@ fn from_package(o: &Options, pkg: &str, work: &Path) -> Result<Found> {
         aur: Vec::new(),
         multilib: non_empty_lines(work, "multilib.txt"),
         gpu32: non_empty_lines(work, "gpu32.txt"),
-        optdeps: non_empty_lines(work, "optdeps.txt")
-            .iter()
-            .filter_map(|l| {
-                let (n, d) = l.split_once('\t')?;
-                Some((n.to_string(), d.to_string()))
-            })
-            .collect(),
+        optdeps: tab_pairs(work, "optdeps.txt"),
+        providers: providers_in(work),
+        host_only: tab_pairs(work, "hostonly.txt"),
     })
 }
 
@@ -1467,6 +1528,8 @@ fn from_files(o: &Options, origin: &Source, snapshot: &str, work: &Path) -> Resu
         multilib: non_empty_lines(work, "multilib.txt"),
         gpu32: non_empty_lines(work, "gpu32.txt"),
         optdeps: Vec::new(),
+        providers: providers_in(work),
+        host_only: tab_pairs(work, "hostonly.txt"),
         notes,
         short,
     })
@@ -1559,6 +1622,17 @@ pub fn create(o: &Options) -> Result<PathBuf> {
             f.multilib.join("; ")
         ));
     }
+    if !f.host_only.is_empty() {
+        notes.push(format!(
+            "Only for the system (inside an application they do nothing; XeeonOS must \
+             have them): {}",
+            f.host_only
+                .iter()
+                .map(|(p, w)| format!("{p} ({w})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     let summary = format!(
         "{} {} ({})\n{}\n\nCommand: {}\nIcon: {}\n{}\n\n\
          Next: the list of permissions, with those it probably needs ticked.",
@@ -1614,6 +1688,27 @@ pub fn create(o: &Options) -> Result<PathBuf> {
         q.yes = Some(Question::ticks_answer(&ticked));
         questions.push(q);
     }
+    // Virtual packages: one question each, never pacman's own choice.
+    let have: Vec<String> = f.closure.iter().chain(&f.packages).cloned().collect();
+    let virtuals: Vec<(String, Vec<String>)> = f
+        .providers
+        .iter()
+        .map(|(v, c)| (v.clone(), order_providers(c, &have)))
+        .collect();
+    for (v, c) in &virtuals {
+        questions.push(Question {
+            title: format!("xapp create: {v}"),
+            text: format!(
+                "It needs a package that provides \"{v}\", and there are several: which one \
+                 goes in the application? (The first: one it has already, or for hardware \
+                 XeeonOS drives.)"
+            ),
+            choices: c.iter().map(|p| (p.clone(), p.clone())).collect(),
+            default: 0,
+            checked: Vec::new(),
+            yes: None,
+        });
+    }
     let base = missing_base(&f.closure, &f.packages);
     if !base.is_empty() {
         questions.push(Question::yes_no(
@@ -1651,6 +1746,13 @@ pub fn create(o: &Options) -> Result<PathBuf> {
             {
                 packages.push(n.clone());
             }
+        }
+    }
+    for _ in &virtuals {
+        if let Some(a) = rest.next()
+            && !packages.contains(a)
+        {
+            packages.push(a.clone());
         }
     }
     if !base.is_empty() && rest.next().is_some_and(|a| a == "yes") {
@@ -2067,5 +2169,32 @@ mod tests {
                 .iter()
                 .any(|p| ["systemd", "pacman", "linux"].contains(p))
         );
+    }
+
+    #[test]
+    fn providers_order() {
+        let c: Vec<String> = [
+            "nvidia-utils",
+            "vulkan-asahi",
+            "vulkan-intel",
+            "vulkan-radeon",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            order_providers(&c, &[]),
+            [
+                "vulkan-intel",
+                "vulkan-radeon",
+                "nvidia-utils",
+                "vulkan-asahi"
+            ]
+        );
+        assert_eq!(
+            order_providers(&c, &["vulkan-radeon".to_string()])[0],
+            "vulkan-radeon"
+        );
+        let fonts: Vec<String> = ["gnu-free-fonts", "noto-fonts"].map(String::from).to_vec();
+        assert_eq!(order_providers(&fonts, &[])[0], "gnu-free-fonts");
     }
 }

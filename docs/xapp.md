@@ -607,9 +607,16 @@ Una **ricetta** è una cartella con `recipe.json`:
 1. in un container Arch Linux (podman o docker; `XAPP_CONTAINER` per
    sceglierlo) installa con `pacstrap` i pacchetti **dallo snapshot della
    ricetta**, con i loro hook (cache delle librerie, icone, font, schemi
-   GSettings), senza documentazione, header e librerie statiche;
+   GSettings), senza documentazione, header e librerie statiche. Se la
+   ricetta lascia a pacman la scelta di un pacchetto virtuale
+   (`vulkan-driver`, `ttf-font`, `java-runtime`...), lo dice con un
+   avviso: pacman prenderebbe il primo della sua lista (per
+   `vulkan-driver`, nvidia-utils). Il wizard lo chiede e lo scrive;
 2. toglie quello che serve solo a un sistema intero (`/boot`, `/home`,
-   `/var`, ...);
+   `/var`, ...) e i file che solo il sistema legge: regole udev, moduli
+   del kernel, servizi e impostazioni di systemd del sistema, utenti di
+   sistema, polkit, D-Bus di sistema (`HOST_ONLY_RE` in `scan.sh`). Dentro
+   la sandbox non li usa nessuno (Steam ne portava 491 unità);
 3. crea l'immagine erofs, scrive il magic, calcola gli hash, scrive il
    manifest, lo firma e chiude il file;
 4. lo installa in `~/Applications` (`--no-install` per non farlo).
@@ -684,6 +691,8 @@ che c'è nella ricetta.
 | programmi a 32 bit che disegnano con OpenGL o Vulkan (o un loader `lib32-` nella chiusura) | i driver grafici a 32 bit (`lib32-mesa`, `lib32-vulkan-radeon`, `-intel`, `-nouveau`): XeeonOS non ne ha da prestare |
 | il permesso `audio`, ma solo ALSA (`alsa-lib` senza librerie di PulseAudio o PipeWire) | `pipewire-alsa`: nella sandbox non c'è la scheda audio, solo il socket di PipeWire |
 | quello che i programmi nominano (`/dev/video`, il portal Camera; `libpulse.so`, `libpipewire`, `libasound.so`) | i permessi `camera`, `audio` già spuntati nella lista |
+| dipendenze **virtuali** (`vulkan-driver`, `ttf-font`, `java-runtime`...) per cui pacman sceglierebbe da solo | una domanda per ognuna, con prima un pacchetto che l'app ha già o, se no, uno per hardware che XeeonOS supporta (mai NVIDIA, CUDA, ROCm o GPU di telefoni per primi); il nome scelto va nella ricetta |
+| pacchetti (della chiusura o opzionali) con **solo file per il sistema**: regole udev (`steam-devices`), moduli del kernel (`ntsync-autoload`), servizi o polkit | una nota nel riepilogo: dentro un'app non fanno niente, deve averli XeeonOS. Gli opzionali così non vengono proposti |
 | programmi di `base` (`tar`, `sed`, `grep`, `gzip`, `findutils`...) che l'app non ha: per regola di Arch i pacchetti non li nominano, ma gli script di avvio li chiamano (Steam si scompatta con `tar`) | quelli mancanti, con una domanda (già sì); mai systemd, pacman o il kernel |
 
 Con `--url` (solo `https://`):

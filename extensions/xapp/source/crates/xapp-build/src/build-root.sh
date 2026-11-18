@@ -67,9 +67,21 @@ unmount() {
     done
 }
 trap unmount EXIT
+# Virtual packages the recipe names no package for: pacman would choose
+# alone (its first, e.g. nvidia-utils for vulkan-driver). Said, so that the
+# recipe can name the one wanted (xapp create asks).
+. /work/scan.sh
+pacman --config /tmp/pacman.conf --root "$root" -Sy >/dev/null
+pacman --config /tmp/pacman.conf --root "$root" -Sp --noconfirm --print-format '%n' bash glibc "$@" \
+    < /dev/null 2>&1 | parse_providers > "$out/providers.txt" || true
+while read -r virtual first others; do
+    [[ -n ${virtual:-} ]] || continue
+    echo "xapp build: WARNING: the recipe names no package for \"$virtual\": pacman takes $first" \
+        "(others: $others). Put the one you want in the recipe's packages." >&2
+done < "$out/providers.txt"
 # The keyring of this container checks the packages (no copy in the root).
 pacman --config /tmp/pacman.conf --root "$root" --cachedir "$root/var/cache/pacman/pkg" \
-    -Sy --noconfirm bash glibc "$@"
+    -S --noconfirm bash glibc "$@"
 
 # AUR packages: built from the commit of the recipe (aur.sh), installed
 # with their dependencies from the snapshot.
@@ -190,6 +202,13 @@ cd /work/root
 rm -rf ./boot ./home ./root ./srv ./mnt ./media ./tmp ./run ./proc ./sys ./dev ./var ./lost+found
 rm -rf ./usr/include ./usr/share/doc ./usr/share/man ./usr/share/info ./usr/share/gtk-doc
 rm -rf ./usr/lib/pkgconfig ./usr/share/pkgconfig ./usr/share/libalpm
+# What only the system uses (scan.sh HOST_ONLY_RE): udev rules, kernel
+# modules, services and settings of the system, polkit, system D-Bus.
+# Inside the sandbox nothing reads them (Steam brought 491 system units).
+find . -mindepth 1 \( -type f -o -type l \) -printf '%P\n' | { grep -E "$HOST_ONLY_RE" || true; } |
+    while IFS= read -r path; do rm -f "./$path"; done
+find ./boot ./usr/lib/udev ./usr/lib/modules ./usr/lib/systemd ./usr/share/polkit-1 ./etc/systemd \
+    ./etc/udev -depth -type d -empty -delete 2>/dev/null || true
 find ./usr/lib -name '*.a' -type f -delete
 while IFS= read -r path; do
     [[ -z $path || $path == *..* ]] && continue

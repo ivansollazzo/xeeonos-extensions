@@ -122,3 +122,61 @@ gpu32() {
         done
     fi
 }
+
+# providers_of <package>...: the virtual packages (vulkan-driver, ttf-font,
+# java-runtime...) installing them leaves pacman to choose a package for by
+# itself, one per line: "virtual candidate..." (its default first). Read
+# from the questions pacman asks (and answers alone without a terminal).
+providers_of() {
+    [[ $# -gt 0 ]] || return 0
+    p -Sp --noconfirm --print-format '%n' "$@" < /dev/null 2>&1 | parse_providers
+}
+
+# only_names: package names only (pacman may print its questions among them).
+only_names() {
+    grep -E '^[a-z0-9@_+][a-z0-9@._+-]*$' || true
+}
+
+# parse_providers: pacman's questions on stdin, "virtual candidate..." out.
+parse_providers() {
+    awk '
+        /providers available for / {
+            if (v != "") print v c
+            v = $NF; sub(/:$/, "", v); c = ""; next
+        }
+        v != "" && /^:: Repository / { next }
+        v != "" && /^ *[0-9]+\) / {
+            n = split($0, w, /[ \t]+/)
+            for (i = 1; i <= n; i++) if (w[i] != "" && w[i] !~ /^[0-9]+\)$/) c = c " " w[i]
+            next
+        }
+        v != "" { print v c; v = "" }
+        END { if (v != "") print v c }
+    ' | sort -u -k1,1
+}
+
+# Where only the system looks: an application's sandbox has no udev, no
+# kernel modules, no services of the system, no polkit. (build-root.sh
+# leaves these out of every image too.)
+HOST_ONLY_RE='^(boot/|usr/lib/(udev|modules|modules-load\.d|modprobe\.d|sysusers\.d|tmpfiles\.d|sysctl\.d|binfmt\.d|systemd/(system|system-[a-z-]+|network|logind\.conf\.d|resolved\.conf\.d|journald\.conf\.d))/|usr/share/(dbus-1/system\.d|dbus-1/system-services|polkit-1)/|etc/(udev|modules-load\.d|modprobe\.d|systemd|sysctl\.d)/)'
+# What does not count either way: licenses, documentation.
+NEUTRAL_RE='^usr/share/(licenses|doc|man|info)/'
+
+# host_only <package>...: those of them whose files are all for the system
+# (and at least one is), "package<TAB>what": udev rules, kernel modules...
+host_only() {
+    [[ $# -gt 0 ]] || return 0
+    p -Fl "$@" 2>/dev/null | awk -v host="$HOST_ONLY_RE" -v neutral="$NEUTRAL_RE" '
+        $2 ~ /\/$/ || $2 ~ neutral { seen[$1] = 1; next }
+        { seen[$1] = 1
+          if ($2 ~ host) { h[$1]++
+              w = $2
+              if (w ~ /udev/) w = "udev rules"
+              else if (w ~ /modules|modprobe/) w = "kernel modules"
+              else if (w ~ /polkit/) w = "polkit rules"
+              else if (w ~ /dbus-1/) w = "system D-Bus services"
+              else w = "system services and settings"
+              if (!(($1, w) in got)) { got[$1, w] = 1; what[$1] = what[$1] (what[$1] ? ", " : "") w }
+          } else other[$1]++ }
+        END { for (k in seen) if (h[k] > 0 && !other[k]) printf "%s\t%s\n", k, what[k] }' | sort
+}

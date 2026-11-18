@@ -73,6 +73,8 @@ pub mod create;
 
 const ROOT_SCRIPT: &str = include_str!("build-root.sh");
 pub(crate) const AUR_LIB: &str = include_str!("aur.sh");
+/// What the files say (the wizard), and what only the system uses (the build).
+pub(crate) const SCAN_LIB: &str = include_str!("scan.sh");
 
 /// Options of `xapp build`.
 pub struct Options {
@@ -104,6 +106,7 @@ struct ContainerBuild<'a> {
 fn image_in_container(b: &ContainerBuild, app_id: &str) -> Result<()> {
     fs::write(b.work.join("build-root.sh"), ROOT_SCRIPT)?;
     fs::write(b.work.join("aur.sh"), AUR_LIB)?;
+    fs::write(b.work.join("scan.sh"), SCAN_LIB)?;
     let engine = engine()?;
     let image_name = container_image();
     let mut cmd = Command::new(&engine);
