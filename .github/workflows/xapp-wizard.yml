@@ -110,6 +110,8 @@ jobs:
           jq -e '.packages | index("tar") != null' "$OUT/steam-recipe/recipe.json"
           # Virtual packages chosen by the wizard, never NVIDIA's by itself.
           jq -e '.packages | index("nvidia-utils") == null' "$OUT/steam-recipe/recipe.json"
+          jq -e '.packages | any(. == "vulkan-intel" or . == "vulkan-radeon" or . == "vulkan-nouveau")' \
+              "$OUT/steam-recipe/recipe.json"
 
       - name: --aur without reading the PKGBUILD is refused
         run: |

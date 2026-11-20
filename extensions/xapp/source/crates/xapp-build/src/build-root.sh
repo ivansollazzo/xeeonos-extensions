@@ -71,9 +71,9 @@ trap unmount EXIT
 # alone (its first, e.g. nvidia-utils for vulkan-driver). Said, so that the
 # recipe can name the one wanted (xapp create asks).
 . /work/scan.sh
-pacman --config /tmp/pacman.conf --root "$root" -Sy >/dev/null
-pacman --config /tmp/pacman.conf --root "$root" -Sp --noconfirm --print-format '%n' bash glibc "$@" \
-    < /dev/null 2>&1 | parse_providers > "$out/providers.txt" || true
+p() { pacman --config /tmp/pacman.conf --root "$root" "$@"; }
+p -Sy >/dev/null
+providers_of bash glibc "$@" > "$out/providers.txt" || true
 while read -r virtual first others; do
     [[ -n ${virtual:-} ]] || continue
     echo "xapp build: WARNING: the recipe names no package for \"$virtual\": pacman takes $first" \

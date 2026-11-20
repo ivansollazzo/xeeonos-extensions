@@ -165,34 +165,71 @@ gpu32() {
 
 # providers_of <package>...: the virtual packages (vulkan-driver, ttf-font,
 # java-runtime...) installing them leaves pacman to choose a package for by
-# itself, one per line: "virtual candidate..." (its default first). Read
-# from the questions pacman asks (and answers alone without a terminal).
+# itself, one per line: "virtual candidate..." (its default first). pacman
+# does not ask while it only prints (-Sp), so this reads the sync databases
+# (what each package provides and depends on) against what it would
+# install: a dependency no package is named after, with more than one
+# package providing it, none of which is wanted by name.
 providers_of() {
     [[ $# -gt 0 ]] || return 0
-    p -Sp --noconfirm --print-format '%n' "$@" < /dev/null 2>&1 | parse_providers
+    local db tmp f
+    db=$(p -v 2>/dev/null | sed -n 's/^DB Path *: *//p' | head -n1)
+    tmp=$(mktemp -d)
+    for f in "${db%/}"/sync/*.db; do
+        [[ -e $f ]] && bsdtar -xOf "$f" '*/desc'
+    done > "$tmp/desc"
+    p -Sp --noconfirm --print-format '%n' "$@" < /dev/null 2>/dev/null | only_names > "$tmp/closure"
+    printf '%s\n' "$@" | sed -E 's/[<>=].*//' > "$tmp/targets"
+    providers_from "$tmp/desc" "$tmp/closure" "$tmp/targets"
+    rm -rf "$tmp"
+}
+
+# providers_from <desc> <closure> <targets>: the work of providers_of, on
+# the sync databases' desc entries, the packages pacman would install and
+# the ones asked for.
+providers_from() {
+    awk '
+        function bare(d) { sub(/[<>=:].*/, "", d); return d }
+        FILENAME == ARGV[1] {
+            if ($0 ~ /^%[A-Z]+%$/) { sec = $0; next }
+            if ($0 == "") { sec = ""; next }
+            if (sec == "%NAME%") { name = $0; names[name] = 1 }
+            else if (sec == "%PROVIDES%") { d = bare($0); prov[d] = prov[d] " " name }
+            else if (sec == "%DEPENDS%") { deps[name] = deps[name] " " bare($0) }
+            next
+        }
+        FILENAME == ARGV[2] { inc[$1] = 1; order[++n] = $1; next }
+        FILENAME == ARGV[3] { if ($1 != "") target[$1] = 1; next }
+        END {
+            # Wanted by name: asked for, or a dependency named after a package.
+            for (t in target) if (t in names) byname[t] = 1
+            for (i = 1; i <= n; i++) {
+                k = split(deps[order[i]], w, " ")
+                for (j = 1; j <= k; j++) {
+                    if (w[j] in names) byname[w[j]] = 1
+                    else virt[w[j]] = 1
+                }
+            }
+            for (t in target) if (!(t in names)) virt[t] = 1
+            for (v in virt) {
+                k = split(prov[v], c, " ")
+                if (k < 2) continue
+                chosen = ""; others = ""; skip = 0
+                for (j = 1; j <= k; j++) {
+                    if (c[j] in byname) skip = 1
+                    if (c[j] in inc) chosen = chosen " " c[j]
+                    else others = others " " c[j]
+                }
+                if (skip || chosen == "") continue
+                print v chosen others
+            }
+        }
+    ' "$1" "$2" "$3" | sort -u -k1,1
 }
 
 # only_names: package names only (pacman may print its questions among them).
 only_names() {
     grep -E '^[a-z0-9@_+][a-z0-9@._+-]*$' || true
-}
-
-# parse_providers: pacman's questions on stdin, "virtual candidate..." out.
-parse_providers() {
-    awk '
-        /providers available for / {
-            if (v != "") print v c
-            v = $NF; sub(/:$/, "", v); c = ""; next
-        }
-        v != "" && /^:: Repository / { next }
-        v != "" && /^ *[0-9]+\) / {
-            n = split($0, w, /[ \t]+/)
-            for (i = 1; i <= n; i++) if (w[i] != "" && w[i] !~ /^[0-9]+\)$/) c = c " " w[i]
-            next
-        }
-        v != "" { print v c; v = "" }
-        END { if (v != "") print v c }
-    ' | sort -u -k1,1
 }
 
 # Where only the system looks: an application's sandbox has no udev, no
@@ -206,7 +243,9 @@ NEUTRAL_RE='^usr/share/(licenses|doc|man|info)/'
 # (and at least one is), "package<TAB>what": udev rules, kernel modules...
 host_only() {
     [[ $# -gt 0 ]] || return 0
-    p -Fl "$@" 2>/dev/null | awk -v host="$HOST_ONLY_RE" -v neutral="$NEUTRAL_RE" '
+    # (The expressions through the environment: awk -v would eat their \.)
+    p -Fl "$@" 2>/dev/null | HOST="$HOST_ONLY_RE" NEUTRAL="$NEUTRAL_RE" awk '
+        BEGIN { host = ENVIRON["HOST"]; neutral = ENVIRON["NEUTRAL"] }
         $2 ~ /\/$/ || $2 ~ neutral { seen[$1] = 1; next }
         { seen[$1] = 1
           if ($2 ~ host) { h[$1]++
