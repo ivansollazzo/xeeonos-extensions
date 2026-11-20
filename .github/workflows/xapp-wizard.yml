@@ -86,6 +86,8 @@ jobs:
               --work "$RUNNER_TEMP/work-multilib" --no-install
           "$XAPP" verify "$OUT/multilib.xapp"
           grep -q '^lib32-zstd ' "$RUNNER_TEMP/work-multilib/out/packages.txt"
+          # Its 32-bit programs may run: the manifest says so.
+          "$XAPP" info "$OUT/multilib.xapp" | grep -q "32-bit too"
 
       - name: Heuristics (only what the files say, no list of applications)
         run: |
@@ -104,6 +106,27 @@ jobs:
           jq -e '.multilib == true' "$OUT/steam-recipe/recipe.json"
           # lib32-mesa comes with steam itself; the 32-bit Vulkan drivers not.
           jq -e '.packages | index("lib32-vulkan-radeon") != null' "$OUT/steam-recipe/recipe.json"
+          # The programs of base Arch packages count on (its script runs tar).
+          jq -e '.packages | index("tar") != null' "$OUT/steam-recipe/recipe.json"
+          # Virtual packages chosen by the wizard, never NVIDIA's by itself.
+          jq -e '.packages | any(test("nvidia")) | not' "$OUT/steam-recipe/recipe.json"
+          jq -e '.packages | any(. == "vulkan-intel" or . == "vulkan-radeon" or . == "vulkan-nouveau")' \
+              "$OUT/steam-recipe/recipe.json"
+
+      - name: A package without a menu entry, with --exec
+        run: |
+          "$XAPP" --yes create --arch wine --exec /usr/bin/wine --snapshot "$SNAPSHOT" \
+              --output "$OUT/wine-recipe" --no-build
+          cat "$OUT/wine-recipe/recipe.json"
+          jq -e '.exec == ["/usr/bin/wine"] and .name == "Wine" and (.icon | test("\\.(png|svg)$"))' \
+              "$OUT/wine-recipe/recipe.json"
+          # Without --exec it is refused, and says how.
+          if "$XAPP" --yes create --arch wine --snapshot "$SNAPSHOT" --output "$OUT/wine-refused" \
+              --no-build 2>&1 | tee "$RUNNER_TEMP/wine-refused.txt"; then
+              echo "::error::a package without a menu entry was taken without --exec"
+              exit 1
+          fi
+          grep -q -- "--exec" "$RUNNER_TEMP/wine-refused.txt"
 
       - name: --aur without reading the PKGBUILD is refused
         run: |

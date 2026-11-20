@@ -58,6 +58,10 @@ pub struct Manifest {
     /// namespaces (Chromium, Electron, WebKitGTK, Qt WebEngine). Decided by
     /// `xapp build` from the image's contents, never by the user.
     pub user_namespaces: bool,
+    /// The application has 32-bit (i386) programs too (recipe `multilib`,
+    /// or a 32-bit loader in its image): the sandbox lets their system
+    /// calls through, under the same rules.
+    pub multilib: bool,
     /// What the application needs from the system to work at all, found in
     /// its image by `xapp build` (e.g. "x11": an interface that opens only
     /// on X11). Given without asking: they are not about the user's data.
@@ -188,6 +192,10 @@ impl Manifest {
                 .get("user_namespaces")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            multilib: obj
+                .get("multilib")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
             capabilities,
             glibc: text(obj, "glibc"),
             libstdcxx: text(obj, "libstdcxx"),
@@ -273,6 +281,7 @@ impl Manifest {
             "host_contract": self.host_contract,
             "gpu": self.gpu.as_str(),
             "user_namespaces": self.user_namespaces,
+            "multilib": self.multilib,
             "capabilities": self.capabilities,
             "glibc": self.glibc,
             "libstdcxx": self.libstdcxx,
@@ -329,6 +338,7 @@ pub(crate) mod tests {
             host_contract: 1,
             gpu: Gpu::Host,
             user_namespaces: true,
+            multilib: true,
             capabilities: vec!["x11".into()],
             glibc: "2.42".into(),
             libstdcxx: "15.2.1".into(),

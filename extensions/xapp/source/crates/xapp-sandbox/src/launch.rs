@@ -4,8 +4,10 @@
 //! which application is talking), wait for it, clean up.
 
 use std::fs;
+use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 use xapp_core::paths;
 use xapp_core::util::{Result, err, gid, have, uid};
@@ -127,6 +129,7 @@ pub fn run(l: &Launch) -> Result<i32> {
     )));
     fs::create_dir_all(&instance.0)?;
     let data = paths::app_data(&m.app_id);
+    let data_dir = data.clone();
     for d in [".config", ".cache", ".local/share", ".local/state"] {
         fs::create_dir_all(data.join(d))?;
     }
@@ -257,7 +260,7 @@ pub fn run(l: &Launch) -> Result<i32> {
         );
     }
     let filter = instance.0.join("seccomp.bpf");
-    fs::write(&filter, seccomp::bytes(nested))?;
+    fs::write(&filter, seccomp::bytes(nested, m.multilib))?;
 
     // systemd-run --user --scope ... [systemd-cat -t xapp-<id>]
     //   sh -c 'exec bwrap --seccomp 9 "$@" 9<"$0"' <filter> <bwrap args> -- <command>
@@ -287,7 +290,9 @@ pub fn run(l: &Launch) -> Result<i32> {
     // Started from the menu, the output goes to the journal through a
     // socket: give it the application's name there (`xapp logs`). On a
     // terminal or into a pipe it stays where it is.
-    if stdout_is_socket()
+    // (Not while tracing: what it says is read for the report.)
+    if !l.trace
+        && stdout_is_socket()
         && have("systemd-cat")
         && std::path::Path::new("/run/systemd/journal/stdout").exists()
     {
@@ -312,13 +317,45 @@ pub fn run(l: &Launch) -> Result<i32> {
         eprintln!("xapp: {}", cmd.join(" "));
     }
     let started = std::time::Instant::now();
-    let status = Command::new(&cmd[0])
-        .args(&cmd[1..])
-        .status()
-        .map_err(|e| err(format!("cannot start {}: {e}", cmd[0])))?;
-    let code = status.code().unwrap_or(1);
-    drop(proxy);
+    let since_time = std::time::SystemTime::now();
+    let since = since_time
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let mut command = Command::new(&cmd[0]);
+    command.args(&cmd[1..]);
+    // Tracing: what it writes on standard error still goes there, and is
+    // kept to see what it missed.
     if l.trace {
+        command.stderr(Stdio::piped());
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| err(format!("cannot start {}: {e}", cmd[0])))?;
+    // What it said, kept (the first 4 MiB are enough to read).
+    let said: Arc<Mutex<Vec<u8>>> = Arc::default();
+    if let Some(mut pipe) = child.stderr.take() {
+        let kept = said.clone();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            let mut to = std::io::stderr();
+            while let Ok(n) = pipe.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let _ = to.write_all(&buf[..n]);
+                if let Ok(mut k) = kept.lock()
+                    && k.len() < 4 << 20
+                {
+                    k.extend_from_slice(&buf[..n]);
+                }
+            }
+        });
+    }
+    // What the trace has seen so far: written while it runs too (every few
+    // seconds), so that a run stopped from outside (closed, killed, a
+    // timeout) leaves its report.
+    let report = |running: bool, code: i32| {
         let mut findings = Vec::new();
         if probe.as_ref().is_some_and(Probe::knocked) {
             findings.push(Finding::X11);
@@ -331,12 +368,63 @@ pub fn run(l: &Launch) -> Result<i32> {
                 &fs::read_to_string(log).unwrap_or_default(),
             ));
         }
-        trace::save(&Report {
+        let text = said
+            .lock()
+            .map(|k| String::from_utf8_lossy(&k).into_owned())
+            .unwrap_or_default();
+        findings.extend(trace::parse_output(&text, nested));
+        // What it wrote in its own log files (some write there only).
+        for log in trace::log_files(&data_dir, since_time) {
+            findings.extend(trace::parse_output(&log, nested));
+        }
+        // Programs the system filter stopped dump core with SIGSYS.
+        if have("coredumpctl")
+            && let Ok(out) = Command::new("coredumpctl")
+                .args(["list", "--no-pager", "--no-legend", "--quiet"])
+                .arg(format!("--since=@{since}"))
+                .stderr(Stdio::null())
+                .output()
+        {
+            findings.extend(trace::parse_coredumps(
+                &String::from_utf8_lossy(&out.stdout),
+                uid(),
+            ));
+        }
+        let mut unique: Vec<Finding> = Vec::new();
+        for f in findings {
+            if !unique.contains(&f) {
+                unique.push(f);
+            }
+        }
+        Report {
             app_id: m.app_id.clone(),
             code,
             seconds: started.elapsed().as_secs(),
-            findings,
-        })?;
+            running,
+            findings: unique,
+        }
+    };
+    let mut noted = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if l.trace && noted.elapsed() >= std::time::Duration::from_secs(5) {
+            let _ = trace::save(&report(true, 0));
+            noted = std::time::Instant::now();
+        }
+    };
+    let code = status.code().unwrap_or(1);
+    if l.trace {
+        // Its last words (the pipe may still be held by programs it left
+        // running in the background: no waiting for them).
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let r = report(false, code);
+        drop(proxy);
+        trace::save(&r)?;
+    } else {
+        drop(proxy);
     }
     drop(image);
     drop(instance);

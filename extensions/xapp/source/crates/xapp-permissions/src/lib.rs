@@ -214,11 +214,13 @@ const SENSITIVE: &[(&str, &str)] = &[
     ("org.freedesktop.ScreenSaver", "locking your screen"),
 ];
 
-/// What a sensitive bus name gives, if it is one.
+/// What a sensitive bus name gives, if it is one (or, for a prefix
+/// wildcard `a.b.c.*`, if it covers one).
 pub fn sensitive_bus_name(name: &str) -> Option<&'static str> {
+    let stem = name.strip_suffix(".*");
     SENSITIVE
         .iter()
-        .find(|(prefix, _)| name.starts_with(prefix))
+        .find(|(prefix, _)| name.starts_with(prefix) || stem.is_some_and(|s| prefix.starts_with(s)))
         .map(|(_, what)| *what)
 }
 
@@ -242,8 +244,8 @@ fn valid_folder(path: &str) -> bool {
 pub fn custom(id: &str) -> Option<Custom> {
     let (kind, value) = id.split_once(':')?;
     match kind {
-        "dbus-talk" if overrides::valid_bus_name(value) => Some(Custom::Talk(value.into())),
-        "dbus-own" if overrides::valid_bus_name(value) => Some(Custom::Own(value.into())),
+        "dbus-talk" if overrides::valid_bus_pattern(value) => Some(Custom::Talk(value.into())),
+        "dbus-own" if overrides::valid_bus_pattern(value) => Some(Custom::Own(value.into())),
         "folder" => {
             let (path, read_only) = match value.strip_suffix(":ro") {
                 Some(p) => (p, true),
@@ -275,8 +277,14 @@ impl Custom {
     /// What it gives, for people.
     pub fn label(&self) -> String {
         match self {
-            Custom::Talk(n) => format!("Talk to {n} (session bus)"),
-            Custom::Own(n) => format!("Take the name {n} (session bus)"),
+            Custom::Talk(n) => match n.strip_suffix(".*") {
+                Some(stem) => format!("Talk to {stem} and the names under it (session bus)"),
+                None => format!("Talk to {n} (session bus)"),
+            },
+            Custom::Own(n) => match n.strip_suffix(".*") {
+                Some(stem) => format!("Take the name {stem} and those under it (session bus)"),
+                None => format!("Take the name {n} (session bus)"),
+            },
             Custom::Folder { path, read_only } => format!(
                 "The folder {path}{}",
                 if *read_only { " (read only)" } else { "" }
@@ -582,6 +590,14 @@ mod tests {
         );
         assert!(warning("dbus-talk:org.kde.kwalletd6").is_some());
         assert!(warning("dbus-own:org.example.Game").is_none());
+        assert_eq!(
+            custom("dbus-own:com.example.Game.Instance.*"),
+            Some(Custom::Own("com.example.Game.Instance.*".into()))
+        );
+        assert!(warning("dbus-own:com.example.Game.*").is_none());
+        assert!(warning("dbus-talk:org.freedesktop.impl.*").is_some());
+        assert!(custom("dbus-own:org.kde.*").is_none());
+        assert!(custom("dbus-own:*").is_none());
         assert_eq!(
             custom("folder:~/Giochi:ro"),
             Some(Custom::Folder {

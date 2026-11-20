@@ -145,6 +145,9 @@ pub fn info(args: &[String]) -> Result<u8> {
     if m.user_namespaces {
         println!("Sandbox:     makes its own inside (user namespaces)");
     }
+    if m.multilib {
+        println!("Programs:    32-bit too");
+    }
     for cap in &m.capabilities {
         let label = perms::capability(cap).map_or("unknown to this xapp", |c| c.label);
         println!("Needs:       {label}");
@@ -202,6 +205,16 @@ pub fn info(args: &[String]) -> Result<u8> {
 
 /// Names on the session bus that open much more than one application:
 /// the doctor warns before giving them.
+/// What `xapp doctor` adds for a finding: a name it took with a number
+/// that changes at each start stands for all of them (`a.b.C.*`).
+fn entry_of(f: &Finding) -> (&'static str, String) {
+    let (kind, value) = f.entry();
+    match f {
+        Finding::Own(n) => (kind, overrides::instance_pattern(n)),
+        _ => (kind, value.to_string()),
+    }
+}
+
 fn sensitive(name: &str) -> Option<&'static str> {
     perms::sensitive_bus_name(name)
 }
@@ -227,10 +240,21 @@ pub fn doctor(args: &[String]) -> Result<u8> {
         );
         return Ok(1);
     };
-    println!(
-        "Last traced run of {name}: ended with code {} after {} s.",
-        report.code, report.seconds
-    );
+    if report.running {
+        println!(
+            "Last traced run of {name}: stopped from outside after {} s, while it ran.",
+            report.seconds
+        );
+    } else {
+        println!(
+            "Last traced run of {name}: ended with code {} after {} s.",
+            report.code, report.seconds
+        );
+    }
+    let missing: Vec<&Finding> = report.findings.iter().filter(|f| f.is_missing()).collect();
+    if !missing.is_empty() {
+        print_missing(&name, m, &missing);
+    }
     let extra = overrides::load(&m.app_id);
     let known = matches!(trust::check(&c), Ok(Trust::Trusted | Trust::Approved));
     // What a permission gives: the permission is offered (below), also if
@@ -253,9 +277,10 @@ pub fn doctor(args: &[String]) -> Result<u8> {
         .findings
         .iter()
         .filter(|f| {
-            let (kind, value) = f.entry();
+            let (kind, value) = entry_of(f);
             !matches!(f, Finding::Wants(_))
-                && !extra.has(kind, value)
+                && !f.is_missing()
+                && !extra.has(kind, &value)
                 && !(**f == Finding::X11 && perms::has_capability(m, "x11"))
         })
         .collect();
@@ -270,11 +295,19 @@ pub fn doctor(args: &[String]) -> Result<u8> {
             "The sandbox refused nothing it could give. Its own messages: xapp logs {}",
             m.app_id
         );
-        return Ok(0);
+        return Ok(if missing.is_empty() { 0 } else { 1 });
     }
     let mut questions = Vec::new();
     for f in &open {
         let mut text = format!("{name} {}.", f.describe());
+        if let Finding::Own(n) = f
+            && let (_, pattern) = entry_of(f)
+            && pattern != *n
+        {
+            text.push_str(&format!(
+                "\n\nThe number changes at each start: {pattern} is allowed (its names)."
+            ));
+        }
         let default_yes = match f {
             Finding::Own(n) | Finding::Talk(n) | Finding::See(n) => match sensitive(n) {
                 Some(what) => {
@@ -287,7 +320,7 @@ pub fn doctor(args: &[String]) -> Result<u8> {
                 text.push_str("\n\nIts windows are then less isolated from other X11 windows.");
                 true
             }
-            Finding::Wants(_) => true,
+            _ => true,
         };
         text.push_str("\n\nUndo with: xapp doctor ");
         text.push_str(&m.app_id);
@@ -331,8 +364,8 @@ pub fn doctor(args: &[String]) -> Result<u8> {
     let mut changed = 0;
     for (f, a) in open.iter().zip(&answers) {
         if a == "yes" {
-            let (kind, value) = f.entry();
-            overrides::add(&m.app_id, kind, value)?;
+            let (kind, value) = entry_of(f);
+            overrides::add(&m.app_id, kind, &value)?;
             changed += 1;
         }
     }
@@ -344,6 +377,96 @@ pub fn doctor(args: &[String]) -> Result<u8> {
     }
     println!("{name}: {changed} change(s). They apply from its next start.");
     Ok(0)
+}
+
+/// What the application missed that its recipe must give (a permission
+/// cannot): commands and libraries (and the packages of its snapshot that
+/// have them), a sandbox of its own, programs the system filter stopped.
+fn print_missing(name: &str, m: &xapp_format::Manifest, missing: &[&Finding]) {
+    println!();
+    println!("{name} missed what only its recipe can give:");
+    for f in missing {
+        println!("  - it {}", f.describe());
+    }
+    // The files to look for in the snapshot's packages.
+    let mut want: Vec<String> = Vec::new();
+    for f in missing {
+        match f {
+            Finding::Command(c) => want.push(format!("usr/bin/{c}")),
+            Finding::Library(l) => {
+                want.push(format!("usr/lib/{l}"));
+                want.push(format!("usr/lib32/{l}"));
+            }
+            _ => {}
+        }
+    }
+    if !want.is_empty() {
+        let found = if m.snapshot.is_empty() {
+            Err(err("its file names no snapshot"))
+        } else {
+            xapp_build::create::owners(&m.snapshot, &want)
+        };
+        match found {
+            Ok(owners) => {
+                let mut packages: Vec<String> = Vec::new();
+                for f in missing {
+                    let (label, files): (&str, Vec<String>) = match f {
+                        Finding::Command(c) => (c, vec![format!("usr/bin/{c}")]),
+                        Finding::Library(l) => {
+                            (l, vec![format!("usr/lib/{l}"), format!("usr/lib32/{l}")])
+                        }
+                        _ => continue,
+                    };
+                    let candidates: Vec<String> = owners
+                        .iter()
+                        .filter(|(file, _)| files.contains(file))
+                        .map(|(_, p)| p.clone())
+                        .collect();
+                    let candidates = xapp_build::create::ours(&candidates);
+                    if candidates.is_empty() {
+                        println!(
+                            "  {label}: no package of the snapshot {} has it",
+                            m.snapshot
+                        );
+                    } else {
+                        println!("  {label}: in {}", candidates.join(", "));
+                        if !candidates.iter().any(|c| packages.contains(c)) {
+                            packages.push(candidates[0].clone());
+                        }
+                    }
+                }
+                if !packages.is_empty() {
+                    println!(
+                        "Add to \"packages\" in its recipe, and build it again: {}",
+                        packages.join(" ")
+                    );
+                }
+            }
+            Err(e) => println!("  (the packages that have them could not be looked up: {e})"),
+        }
+    }
+    if missing.contains(&&Finding::Namespaces) {
+        if m.user_namespaces {
+            println!(
+                "It may make its own sandbox, but only with the user's service manager running."
+            );
+        } else {
+            println!(
+                "For its own sandbox: \"user_namespaces\": true in its recipe, and build it again."
+            );
+        }
+    }
+    if missing.iter().any(|f| matches!(f, Finding::Stopped(_))) {
+        if m.multilib {
+            println!("A program made a call the sandbox never allows (see: coredumpctl list).");
+        } else {
+            println!(
+                "32-bit programs run only in images built for them: build it again with this \
+                 xapp (it sees them), or set \"multilib\": true in its recipe."
+            );
+        }
+    }
+    println!();
 }
 
 /// `xapp verify <file>`: the whole check, the image read again.

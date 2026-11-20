@@ -210,15 +210,24 @@ fn print_trace(app_id: &str) {
         r.code, r.seconds
     );
     if r.findings.is_empty() {
-        eprintln!("xapp: the sandbox refused nothing on the session bus or X11.");
+        eprintln!("xapp: the sandbox refused nothing, and it missed nothing it said.");
         eprintln!("xapp: its own messages are above (or: xapp logs {app_id}).");
         return;
     }
-    eprintln!("xapp: the sandbox refused:");
-    for f in &r.findings {
-        eprintln!("  - it {}", f.describe());
+    let (missing, refused): (Vec<_>, Vec<_>) = r.findings.iter().partition(|f| f.is_missing());
+    if !refused.is_empty() {
+        eprintln!("xapp: the sandbox refused:");
+        for f in &refused {
+            eprintln!("  - it {}", f.describe());
+        }
     }
-    eprintln!("xapp: to allow some of these: xapp doctor {app_id}");
+    if !missing.is_empty() {
+        eprintln!("xapp: it missed (its recipe can give these):");
+        for f in &missing {
+            eprintln!("  - it {}", f.describe());
+        }
+    }
+    eprintln!("xapp: what to do about it: xapp doctor {app_id}");
 }
 
 /// The permissions an application asks for, as one list to tick: nothing

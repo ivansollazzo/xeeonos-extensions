@@ -251,7 +251,12 @@ Altre protezioni:
   rifiuta ptrace, mount, moduli del kernel, kexec, keyring, BPF, perf,
   unshare, setns, clone con `CLONE_NEWUSER`, cambio dell'ora, swap, reboot,
   `TIOCSTI` e altro. clone3 risponde "non supportato", così glibc ripiega su
-  clone, di cui il filtro vede i flag. I programmi i386/x32 vengono fermati.
+  clone, di cui il filtro vede i flag. I programmi x32 vengono fermati; quelli
+  i386 anche, a meno che l'app abbia programmi a 32 bit (`multilib` nel
+  manifest: dalla ricetta, o perché l'immagine ha un loader a 32 bit). Allora
+  le loro chiamate passano per le stesse regole, con i numeri i386, come fa
+  il multiarch di Flatpak. Senza questo Steam, Wine e ogni programma a 32
+  bit morivano con SIGSYS.
 - **Sandbox propria dentro la nostra** (`user_namespaces` nel manifest):
   Chromium, Electron, CEF, WebKitGTK e Qt WebEngine isolano le proprie
   pagine con i namespace utente, e senza non partono. Non è un permesso e
@@ -400,6 +405,14 @@ e sono **chiesti all'utente** come gli altri, mai dati di default. Quelli
 delicati (portachiavi, systemd, Shell, KWin, ..., e `device:all`) sono
 segnati "attenzione" e `--yes` non li dà.
 
+I nomi del bus possono finire con `.*` (`dbus-own:com.example.Gioco.*`):
+il nome e tutti quelli sotto, come `--own=...*` di xdg-dbus-proxy. Serve
+alle app che prendono un nome con un numero diverso a ogni avvio (Steam:
+`...LaunchAlongsideSteam.Instance394`). Il prefisso deve avere almeno tre
+parti (mai `org.kde.*`), ed è delicato se copre un nome delicato.
+`xapp doctor`, per un nome rifiutato che finisce con un numero, propone
+direttamente il prefisso.
+
 **Alla prima apertura** i permessi in sospeso sono chiesti tutti insieme,
 in una lista a caselle (come tasksel): niente spuntato, l'utente spunta
 quello che permette (spazio) e conferma.
@@ -464,7 +477,8 @@ Se un'app non parte o non fa qualcosa, non si indovina:
 
 ```
 xapp run --trace <app>     avvia e nota cosa la sandbox rifiuta
-xapp doctor <app>          propone di permettere quello che è stato rifiutato
+xapp doctor <app>          propone di permettere quello che è stato rifiutato,
+                           e i pacchetti di quello che mancava
 ```
 
 Con `--trace` il filtro del bus scrive ogni messaggio (`xdg-dbus-proxy
@@ -475,6 +489,35 @@ rifiutate al portal Camera o alle notifiche contano come "voleva la
 fotocamera" o "voleva le notifiche". Alla fine il resoconto (codice di
 uscita, durata, nomi del bus rifiutati, X11, permessi voluti) va in
 `~/.local/state/xapps/trace/<id>` e viene stampato.
+
+Il resoconto nota anche quello che all'app **manca** e che nessun permesso
+può dare, perché lo deve dare la ricetta:
+
+- quello che l'app scrive sullo standard error (che resta visibile come
+  sempre): `tar: command not found` (anche `sh: 1: zenity: not found`),
+  `error while loading shared libraries: libnss3.so`, e gli errori di chi
+  prova a farsi una sandbox sua senza `user_namespaces` ("No usable
+  sandbox", "setting up uid map", l'helper SUID di Chromium/Electron,
+  ...);
+- lo stesso nei file di log che l'app scrive durante l'avvio nei suoi
+  dati (`*.log`, o i file di una cartella `log`/`logs`): c'è chi scrive
+  solo lì (Steam);
+- i programmi fermati dal filtro di sistema: `coredumpctl` dopo l'avvio,
+  i processi dell'utente morti con `SIGSYS` (per esempio un programma a 32
+  bit in un'immagine costruita senza `multilib`).
+
+`xapp run --trace` li stampa a parte ("it missed") dai rifiuti. Il
+resoconto viene scritto anche mentre l'app gira (ogni 5 secondi), così
+resta anche se la si chiude da fuori (un kill, un timeout).
+`xapp doctor` non li chiede: cerca nello snapshot dell'app (lo stesso
+database dei file di `pacman -F` che usa il wizard, in un container) i
+pacchetti che hanno `usr/bin/<comando>` o `usr/lib{,32}/<libreria>`, li
+mostra (quelli per hardware che XeeonOS non guida solo se non c'è altro), e
+dice quali aggiungere a `"packages"` nella ricetta prima di ricostruirla;
+per le sandbox proprie suggerisce `"user_namespaces": true`, per i
+programmi fermati `"multilib"`. Vale per tutte le sorgenti del wizard (Arch,
+AUR, URL, cartella): la ricetta ha sempre il suo snapshot e la lista
+`packages`.
 
 `xapp doctor` chiede, una cosa per volta, se permettere ciascuna di quelle
 cose (e i permessi che l'utente aveva negato). Un permesso voluto ma non
@@ -594,15 +637,24 @@ Una **ricetta** è una cartella con `recipe.json`:
 - `multilib`: `true` aggiunge il repository multilib dello stesso
   snapshot (pacchetti a 32 bit, `lib32-*`, e app che ne hanno bisogno).
   La build fa solo quello che dice la ricetta; è il wizard a proporlo.
+  Il manifest lo riporta (anche quando l'immagine porta un suo loader a
+  32 bit) e la sandbox lascia girare i programmi i386.
 
 `xapp build <ricetta>`:
 
 1. in un container Arch Linux (podman o docker; `XAPP_CONTAINER` per
    sceglierlo) installa con `pacstrap` i pacchetti **dallo snapshot della
    ricetta**, con i loro hook (cache delle librerie, icone, font, schemi
-   GSettings), senza documentazione, header e librerie statiche;
+   GSettings), senza documentazione, header e librerie statiche. Se la
+   ricetta lascia a pacman la scelta di un pacchetto virtuale
+   (`vulkan-driver`, `ttf-font`, `java-runtime`...), lo dice con un
+   avviso: pacman prenderebbe il primo della sua lista (per
+   `vulkan-driver`, nvidia-utils). Il wizard lo chiede e lo scrive;
 2. toglie quello che serve solo a un sistema intero (`/boot`, `/home`,
-   `/var`, ...);
+   `/var`, ...) e i file che solo il sistema legge: regole udev, moduli
+   del kernel, servizi e impostazioni di systemd del sistema, utenti di
+   sistema, polkit, D-Bus di sistema (`HOST_ONLY_RE` in `scan.sh`). Dentro
+   la sandbox non li usa nessuno (Steam ne portava 491 unità);
 3. crea l'immagine erofs, scrive il magic, calcola gli hash, scrive il
    manifest, lo firma e chiude il file;
 4. lo installa in `~/Applications` (`--no-install` per non farlo).
@@ -636,7 +688,11 @@ Con `--arch`:
    snapshot che la contiene e aggiunge quel pacchetto), categorie, tipi di
    file e classe della finestra; l'id è il nome
    del `.desktop` se è già in stile reverse-DNS, altrimenti
-   `org.xeeonos.arch.<pacchetto>` (`--id` per sceglierlo);
+   `org.xeeonos.arch.<pacchetto>` (`--id` per sceglierlo). Un pacchetto
+   senza voce di menu (wine) si accetta solo con `--exec <programma>`: la
+   voce la fa il wizard, con il nome del pacchetto e la sua icona (nel
+   pacchetto o in un tema) o, se non c'è, quella generica dei temi
+   (`application-x-executable`; `--icon` per sceglierla);
 3. **i permessi**, in una lista a caselle come tasksel: tutti quelli del
    catalogo, con già spuntati (e il perché accanto) quelli che
    probabilmente servono. Li deduce dalle librerie che il pacchetto si
@@ -677,6 +733,10 @@ che c'è nella ricetta.
 | programmi a 32 bit che disegnano con OpenGL o Vulkan (o un loader `lib32-` nella chiusura) | i driver grafici a 32 bit (`lib32-mesa`, `lib32-vulkan-radeon`, `-intel`, `-nouveau`): XeeonOS non ne ha da prestare |
 | il permesso `audio`, ma solo ALSA (`alsa-lib` senza librerie di PulseAudio o PipeWire) | `pipewire-alsa`: nella sandbox non c'è la scheda audio, solo il socket di PipeWire |
 | quello che i programmi nominano (`/dev/video`, il portal Camera; `libpulse.so`, `libpipewire`, `libasound.so`) | i permessi `camera`, `audio` già spuntati nella lista |
+| **archivi dentro l'app** (tar, zip; più di 100 KiB): launcher che si scompattano all'avvio, come il bootstrap di Steam | vengono aperti e guardati come gli altri file: librerie che chiedono e nominano, programmi a 32 bit, permessi. Anche `xapp build` li apre: programmi a 32 bit → `multilib` nel manifest; un programma che si collega a X11 e non a Wayland → la capability `x11`; i segni di una sandbox propria (Chromium, CEF...) → `user_namespaces` |
+| dipendenze **virtuali** (`vulkan-driver`, `ttf-font`, `java-runtime`...) per cui pacman sceglierebbe da solo (lette dai database dello snapshot: cosa fornisce ogni pacchetto, contro quello che pacman installerebbe; pacman non chiede quando stampa soltanto) | una domanda per ognuna, con prima un pacchetto che l'app ha già o, se no, uno per hardware che XeeonOS supporta (mai NVIDIA, CUDA, ROCm o GPU di telefoni per primi); il nome scelto va nella ricetta |
+| pacchetti (della chiusura o opzionali) con **solo file per il sistema**: regole udev (`steam-devices`), moduli del kernel (`ntsync-autoload`), servizi o polkit | una nota nel riepilogo: dentro un'app non fanno niente, deve averli XeeonOS. Gli opzionali così non vengono proposti |
+| programmi di `base` (`tar`, `sed`, `grep`, `gzip`, `findutils`...) che l'app non ha: per regola di Arch i pacchetti non li nominano, ma gli script di avvio li chiamano (Steam si scompatta con `tar`) | quelli mancanti, con una domanda (già sì); mai systemd, pacman o il kernel |
 
 Con `--url` (solo `https://`):
 
@@ -752,7 +812,8 @@ xapp permissions <app> [<permesso> yes|no|ask | --reset]
                                           dichiarato); --reset: dimentica le scelte
 xapp permissions --all [<permesso> yes|no|ask]
                                           lo stesso per tutte le app
-xapp doctor <app> [--reset]               permette quello che --trace ha visto rifiutare
+xapp doctor <app> [--reset]               permette quello che --trace ha visto rifiutare,
+                                          e trova i pacchetti di quello che mancava
 xapp logs <app> [-f]                      i messaggi dell'app (journal)
 xapp ps                                   le app aperte: pid, da quanto, memoria
 xapp kill <app>                           chiude l'app (tutte le sue finestre e processi)

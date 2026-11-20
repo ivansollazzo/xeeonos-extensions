@@ -15,6 +15,8 @@
 #                        loaded while running (dlopen: sound, video, ...)
 #   /work/missing.txt    libraries no package of the snapshot has
 #   /work/closure.txt    every package the found ones bring
+#   /work/providers.txt  virtual packages pacman would choose for alone (scan.sh)
+#   /work/hostonly.txt   packages whose files only the system can use (scan.sh)
 #   /work/hints.txt      "permission what": what its programs name that a
 #                        permission gives (camera /dev/video, audio
 #                        libpulse.so.0), for the wizard's proposals
@@ -34,7 +36,8 @@ snapshot=${1:?snapshot missing}
 url=${2:?url missing}
 cd /work
 rm -rf download x tree url.txt sha256.txt top.txt files.txt programs.txt \
-    needs.txt loads.txt missing.txt closure.txt hints.txt multilib.txt gpu32.txt
+    needs.txt loads.txt missing.txt closure.txt hints.txt multilib.txt gpu32.txt \
+    providers.txt hostonly.txt
 mkdir -p x tree
 . /work/scan.sh
 
@@ -120,9 +123,11 @@ mapfile -t chosen < <(cut -d' ' -f2 needs.txt | sort -u)
 loads_of /tmp/owners /tmp/named.sorted "${chosen[@]}" > loads.txt
 mapfile -t -O "${#chosen[@]}" chosen < <(cut -d' ' -f2 loads.txt)
 if [[ ${#chosen[@]} -gt 0 ]]; then
-    p -Sp --noconfirm --print-format '%n' "${chosen[@]}" > closure.txt
+    p -Sp --noconfirm --print-format '%n' "${chosen[@]}" < /dev/null 2>/dev/null | only_names > closure.txt
+    providers_of "${chosen[@]}" > providers.txt
 else
     : > closure.txt
+    : > providers.txt
 fi
 # 32-bit programs: multilib, and 32-bit graphics drivers.
 : > multilib.txt
@@ -134,6 +139,9 @@ if [[ ${#m[@]} -gt 0 ]]; then
     echo "32-bit packages: ${m[*]}" >> multilib.txt
 fi
 gpu32 closure.txt > gpu32.txt
+# Packages whose files only the system can use (udev rules, kernel modules).
+mapfile -t all < closure.txt
+host_only "${all[@]}" > hostonly.txt
 rm -rf x
 if [[ -n ${XAPP_CHOWN:-} ]]; then
     chown -R "$XAPP_CHOWN" /work

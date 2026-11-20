@@ -18,6 +18,10 @@
 #   /work/multilib.txt  why it needs the multilib repository, if it does
 #   /work/gpu32.txt     32-bit graphics drivers to propose (scan.sh)
 #   /work/optdeps.txt   its optional dependencies: "name<TAB>description"
+#   /work/providers.txt the virtual packages pacman would choose a package
+#                       for by itself: "virtual candidate..." (scan.sh)
+#   /work/hostonly.txt  packages (of the closure, or optional) whose files
+#                       only the system can use: "package<TAB>why" (scan.sh)
 #
 # Usage: create-arch.sh <snapshot YYYY/MM/DD> <package> [<package file>]
 #   (a package file: built from the AUR by create-aur.sh, not in the
@@ -28,7 +32,8 @@ snapshot=${1:?snapshot missing}
 pkg=${2:?package missing}
 local_file=${3:-}
 rm -rf /work/pkgroot /work/pkg /work/info.txt /work/closure.txt /work/files.txt /work/icons.txt \
-    /work/loads.txt /work/hints.txt /work/multilib.txt /work/gpu32.txt /work/optdeps.txt
+    /work/loads.txt /work/hints.txt /work/multilib.txt /work/gpu32.txt /work/optdeps.txt \
+    /work/providers.txt /work/hostonly.txt
 mkdir -p /work/pkgroot /work/pkg
 . /work/scan.sh
 
@@ -63,16 +68,18 @@ if [[ -n $local_file ]]; then
     mapfile -t deps < <(bsdtar -xOf "$file" .PKGINFO | sed -n 's/^depend = //p' | sed -E 's/[<>=].*//')
     {
         if [[ ${#deps[@]} -gt 0 ]]; then
-            p -Sp --print-format '%n' "${deps[@]}"
+            p -Sp --noconfirm --print-format '%n' "${deps[@]}" < /dev/null 2>/dev/null | only_names
         fi
         echo "$pkg"
     } | sort -u > /work/closure.txt
+    if [[ ${#deps[@]} -gt 0 ]]; then providers_of "${deps[@]}" > /work/providers.txt; fi
 else
     if ! p -Si "$pkg" > /work/info.txt 2>/dev/null; then
         echo "create-arch.sh: no package \"$pkg\" in the Arch snapshot $snapshot" >&2
         exit 2
     fi
-    p -Sp --print-format '%n' "$pkg" > /work/closure.txt
+    p -Sp --noconfirm --print-format '%n' "$pkg" < /dev/null 2>/dev/null | only_names > /work/closure.txt
+    providers_of "$pkg" > /work/providers.txt
     # The package alone (no dependencies), to read its files.
     p -Swdd --noconfirm --cachedir /work/pkg "$pkg" >/dev/null
     file=$(find /work/pkg -name "$pkg-*.pkg.tar.*" ! -name '*.sig' | head -n1)
@@ -130,10 +137,32 @@ awk '/^Optional Deps/ {on = 1; sub(/^Optional Deps *: */, ""); print; next}
             printf '%s\t%s\n' "$name" "$desc" >> /work/optdeps.txt
         fi
     done
+# Packages whose files only the system can use (udev rules, kernel
+# modules, system services): in the closure, a note for the user; among
+# the optional ones, not proposed (they belong in XeeonOS, not in an app).
+host_only "${in_repo[@]}" > /work/hostonly.txt
+: > /tmp/optdeps.kept
+while IFS=$'\t' read -r name desc; do
+    [[ -n $name ]] || continue
+    mapfile -t brings < <(p -Sp --noconfirm --print-format '%n' "$name" < /dev/null 2>/dev/null |
+        only_names | grep -vxF -f /work/closure.txt || true)
+    host_only "${brings[@]}" > /tmp/host
+    if [[ ${#brings[@]} -gt 0 && $(wc -l < /tmp/host) -eq ${#brings[@]} ]]; then
+        printf '%s\t%s\n' "$name" "$(cut -f2 /tmp/host | sort -u | paste -sd, -)" >> /work/hostonly.txt
+    else
+        printf '%s\t%s\n' "$name" "$desc" >> /tmp/optdeps.kept
+    fi
+done < /work/optdeps.txt
+mv /tmp/optdeps.kept /work/optdeps.txt
 # Menu icons named after a theme icon: who has them (the files database).
 : > /work/icons.txt
 mapfile -t icons < <(cat /work/pkgroot/usr/share/applications/*.desktop 2>/dev/null |
     sed -n 's/^Icon=//p' | grep -v '^/' | sort -u)
+# No menu entry (a program started with --exec, like wine): an icon named
+# after the package, else the generic one of the themes.
+if ! compgen -G '/work/pkgroot/usr/share/applications/*.desktop' > /dev/null; then
+    icons+=("$pkg" application-x-executable)
+fi
 missing=()
 for i in "${icons[@]}"; do
     grep -qE "/$i\.(png|svg)$" /work/files.txt || missing+=("$i")
