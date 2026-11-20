@@ -688,7 +688,11 @@ Con `--arch`:
    snapshot che la contiene e aggiunge quel pacchetto), categorie, tipi di
    file e classe della finestra; l'id è il nome
    del `.desktop` se è già in stile reverse-DNS, altrimenti
-   `org.xeeonos.arch.<pacchetto>` (`--id` per sceglierlo);
+   `org.xeeonos.arch.<pacchetto>` (`--id` per sceglierlo). Un pacchetto
+   senza voce di menu (wine) si accetta solo con `--exec <programma>`: la
+   voce la fa il wizard, con il nome del pacchetto e la sua icona (nel
+   pacchetto o in un tema) o, se non c'è, quella generica dei temi
+   (`application-x-executable`; `--icon` per sceglierla);
 3. **i permessi**, in una lista a caselle come tasksel: tutti quelli del
    catalogo, con già spuntati (e il perché accanto) quelli che
    probabilmente servono. Li deduce dalle librerie che il pacchetto si

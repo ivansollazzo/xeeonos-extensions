@@ -113,6 +113,21 @@ jobs:
           jq -e '.packages | any(. == "vulkan-intel" or . == "vulkan-radeon" or . == "vulkan-nouveau")' \
               "$OUT/steam-recipe/recipe.json"
 
+      - name: A package without a menu entry, with --exec
+        run: |
+          "$XAPP" --yes create --arch wine --exec /usr/bin/wine --snapshot "$SNAPSHOT" \
+              --output "$OUT/wine-recipe" --no-build
+          cat "$OUT/wine-recipe/recipe.json"
+          jq -e '.exec == ["/usr/bin/wine"] and .name == "Wine" and (.icon | test("\\.(png|svg)$"))' \
+              "$OUT/wine-recipe/recipe.json"
+          # Without --exec it is refused, and says how.
+          if "$XAPP" --yes create --arch wine --snapshot "$SNAPSHOT" --output "$OUT/wine-refused" \
+              --no-build 2>&1 | tee "$RUNNER_TEMP/wine-refused.txt"; then
+              echo "::error::a package without a menu entry was taken without --exec"
+              exit 1
+          fi
+          grep -q -- "--exec" "$RUNNER_TEMP/wine-refused.txt"
+
       - name: --aur without reading the PKGBUILD is refused
         run: |
           if "$XAPP" --yes create --aur "$AUR_APP" --snapshot "$SNAPSHOT" \

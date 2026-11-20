@@ -158,6 +158,11 @@ mv /tmp/optdeps.kept /work/optdeps.txt
 : > /work/icons.txt
 mapfile -t icons < <(cat /work/pkgroot/usr/share/applications/*.desktop 2>/dev/null |
     sed -n 's/^Icon=//p' | grep -v '^/' | sort -u)
+# No menu entry (a program started with --exec, like wine): an icon named
+# after the package, else the generic one of the themes.
+if ! compgen -G '/work/pkgroot/usr/share/applications/*.desktop' > /dev/null; then
+    icons+=("$pkg" application-x-executable)
+fi
 missing=()
 for i in "${icons[@]}"; do
     grep -qE "/$i\.(png|svg)$" /work/files.txt || missing+=("$i")

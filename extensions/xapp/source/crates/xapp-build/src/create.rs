@@ -829,6 +829,41 @@ fn pick_desktop(dir: &Path, pkg: &str) -> Option<(String, Desktop)> {
     (!entries.is_empty()).then(|| entries.swap_remove(pos))
 }
 
+/// A menu entry for a package that has none, from `--exec` (and `--icon`):
+/// its name is the package's, its icon one named after the package (in it
+/// or in a theme), else the generic one of the themes.
+fn entry_for(pkg: &str, exec: &str, icon: Option<&str>, work: &Path) -> Desktop {
+    let mut name: Vec<char> = pkg.chars().collect();
+    if let Some(c) = name.first_mut() {
+        *c = c.to_ascii_uppercase();
+    }
+    let files = lines_of(work, "files.txt");
+    let themes = lines_of(work, "icons.txt");
+    let icon = icon.map(String::from).unwrap_or_else(|| {
+        let named = |n: &str| {
+            icon_path(n, &files).is_some()
+                || themes.iter().any(|l| {
+                    l.rsplit('/')
+                        .next()
+                        .and_then(|f| f.split_once('.'))
+                        .map(|(s, _)| s)
+                        == Some(n)
+                })
+        };
+        if named(pkg) {
+            pkg.to_string()
+        } else {
+            "application-x-executable".to_string()
+        }
+    });
+    Desktop {
+        name: name.into_iter().collect(),
+        exec: exec.to_string(),
+        icon,
+        ..Desktop::default()
+    }
+}
+
 /// An application id for a package whose menu entry has none.
 fn default_app_id(stem: &str, pkg: &str) -> String {
     if valid_app_id(stem) && stem.split('.').count() >= 3 {
@@ -1148,11 +1183,24 @@ fn from_package(o: &Options, pkg: &str, work: &Path) -> Result<Found> {
     let info = fs::read_to_string(work.join("info.txt"))?;
     let closure = lines_of(work, "closure.txt");
     let files = lines_of(work, "files.txt");
-    let (stem, d) = pick_desktop(&work.join("pkgroot/usr/share/applications"), pkg).ok_or_else(|| {
-        err(format!(
-            "{pkg} has no menu entry (.desktop): it is not an application with windows, or its entry is in another package"
-        ))
-    })?;
+    let (stem, d) = match (
+        pick_desktop(&work.join("pkgroot/usr/share/applications"), pkg),
+        &o.exec,
+    ) {
+        (Some(found), _) => found,
+        // No menu entry, but the program to start is given: the entry is
+        // made here (a program like wine, started with its arguments).
+        (None, Some(exec)) => (
+            pkg.to_string(),
+            entry_for(pkg, exec, o.icon.as_deref(), work),
+        ),
+        (None, None) => {
+            return Err(err(format!(
+                "{pkg} has no menu entry (.desktop): it is not an application with windows, or \
+                 its entry is in another package (or give the program: --exec <program>)"
+            )));
+        }
+    };
     let app_id = chosen_id(o)?.unwrap_or_else(|| default_app_id(&stem, pkg));
     let exec = command(&d.exec, &files)
         .ok_or_else(|| err(format!("the menu entry of {pkg} has no command")))?;
@@ -2207,6 +2255,30 @@ mod tests {
                 .iter()
                 .any(|p| ["systemd", "pacman", "linux"].contains(p))
         );
+    }
+
+    #[test]
+    fn entry_without_desktop() {
+        let work = std::env::temp_dir().join(format!("xapp-entry-{}", std::process::id()));
+        fs::create_dir_all(&work).unwrap();
+        fs::write(work.join("files.txt"), "usr/bin/wine\n").unwrap();
+        fs::write(
+            work.join("icons.txt"),
+            "adwaita-icon-theme usr/share/icons/Adwaita/scalable/mimetypes/application-x-executable.svg\n",
+        )
+        .unwrap();
+        let d = entry_for("wine", "/usr/bin/wine", None, &work);
+        assert_eq!(d.name, "Wine");
+        assert_eq!(d.exec, "/usr/bin/wine");
+        assert_eq!(d.icon, "application-x-executable");
+        fs::write(
+            work.join("files.txt"),
+            "usr/share/icons/hicolor/scalable/apps/wine.svg\n",
+        )
+        .unwrap();
+        assert_eq!(entry_for("wine", "wine", None, &work).icon, "wine");
+        assert_eq!(entry_for("wine", "wine", Some("x"), &work).icon, "x");
+        fs::remove_dir_all(&work).unwrap();
     }
 
     #[test]
