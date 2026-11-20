@@ -173,12 +173,15 @@ gpu32() {
 providers_of() {
     [[ $# -gt 0 ]] || return 0
     local db tmp f
-    db=$(p -v 2>/dev/null | sed -n 's/^DB Path *: *//p' | head -n1)
+    # (-v prints the paths; -Q, so that it has something to do.)
+    db=$({ p -Qv 2>/dev/null || true; } | sed -n 's/^DB Path *: *//p' | head -n1)
     tmp=$(mktemp -d)
     for f in "${db%/}"/sync/*.db; do
-        [[ -e $f ]] && bsdtar -xOf "$f" '*/desc'
+        [[ -e $f ]] || continue
+        bsdtar -xOf "$f" '*/desc' 2>/dev/null || true
     done > "$tmp/desc"
-    p -Sp --noconfirm --print-format '%n' "$@" < /dev/null 2>/dev/null | only_names > "$tmp/closure"
+    { p -Sp --noconfirm --print-format '%n' "$@" < /dev/null 2>/dev/null || true; } |
+        only_names > "$tmp/closure"
     printf '%s\n' "$@" | sed -E 's/[<>=].*//' > "$tmp/targets"
     providers_from "$tmp/desc" "$tmp/closure" "$tmp/targets"
     rm -rf "$tmp"
@@ -194,7 +197,10 @@ providers_from() {
             if ($0 ~ /^%[A-Z]+%$/) { sec = $0; next }
             if ($0 == "") { sec = ""; next }
             if (sec == "%NAME%") { name = $0; names[name] = 1 }
-            else if (sec == "%PROVIDES%") { d = bare($0); prov[d] = prov[d] " " name }
+            else if (sec == "%PROVIDES%") {
+                d = bare($0)
+                if (!((d, name) in has)) { has[d, name] = 1; prov[d] = prov[d] " " name }
+            }
             else if (sec == "%DEPENDS%") { deps[name] = deps[name] " " bare($0) }
             next
         }
