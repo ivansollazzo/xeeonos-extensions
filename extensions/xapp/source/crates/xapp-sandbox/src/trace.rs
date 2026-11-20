@@ -148,6 +148,11 @@ pub fn parse_output(text: &str, nested: bool) -> Vec<Finding> {
         "unshare(CLONE_NEWUSER)",
         "cannot create user namespace",
         "Failed to create user namespace",
+        "non-privileged user namespaces",
+        "requires user namespaces",
+        "The SUID sandbox helper binary",
+        "CanCreateUserNamespace() clone() failure",
+        "Bubblewrap (bwrap) doesn't work",
     ];
     for line in text.lines() {
         let line = line.trim();
@@ -172,6 +177,54 @@ pub fn parse_output(text: &str, nested: bool) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// The text an application wrote, during the run, in its log files under
+/// its data (`*.log`, or files in a `log`/`logs` folder): the last 256 KiB
+/// of each, at most 50 files.
+pub fn log_files(data: &Path, since: std::time::SystemTime) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut dirs = vec![(data.to_path_buf(), 0)];
+    while let Some((dir, depth)) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let Ok(meta) = e.metadata() else { continue };
+            let path = e.path();
+            if meta.is_dir() {
+                if depth < 6 {
+                    dirs.push((path, depth + 1));
+                }
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            let in_logs = dir.file_name().is_some_and(|d| {
+                matches!(d.to_string_lossy().to_lowercase().as_str(), "log" | "logs")
+            });
+            let fresh = meta.modified().is_ok_and(|t| t >= since);
+            if meta.is_file() && fresh && (name.ends_with(".log") || in_logs) {
+                if let Some(text) = tail(&path, 256 << 10) {
+                    out.push(text);
+                }
+                if out.len() >= 50 {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The last `max` bytes of a file, as text.
+fn tail(path: &Path, max: u64) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(max))).ok()?;
+    let mut buf = Vec::new();
+    f.take(max).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 /// Programs of the user stopped by SIGSYS, from `coredumpctl list
@@ -289,6 +342,9 @@ pub struct Report {
     pub code: i32,
     /// How long it ran.
     pub seconds: u64,
+    /// Still running when the report was written (stopped from outside
+    /// before it ended: closed, killed, a timeout).
+    pub running: bool,
     pub findings: Vec<Finding>,
 }
 
@@ -298,6 +354,9 @@ impl Report {
             "app={}\nexit={}\nseconds={}\n",
             self.app_id, self.code, self.seconds
         );
+        if self.running {
+            t.push_str("running=yes\n");
+        }
         for f in &self.findings {
             let (k, v) = f.entry();
             t.push_str(&format!("{k}={v}\n"));
@@ -312,6 +371,7 @@ impl Report {
                 "app" => r.app_id = v,
                 "exit" => r.code = v.parse().unwrap_or(0),
                 "seconds" => r.seconds = v.parse().unwrap_or(0),
+                "running" => r.running = v == "yes",
                 _ => {
                     if let Some(f) = Finding::from_entry(&k, &v)
                         && !r.findings.contains(&f)
@@ -421,6 +481,7 @@ steam.sh: line 12: tar: command not found
 /usr/bin/foo: 3: zenity: not found
 ./app: error while loading shared libraries: libnss3.so: cannot open shared object file: No such file or directory
 bwrap: setting up uid map: Permission denied
+[2:1118/162333.340895:FATAL:setuid_sandbox_host.cc:166] The SUID sandbox helper binary was found, but is not configured correctly.
 sh: 1: /usr/bin/xdg-open: not found
 everything is fine: not found here
 ";
@@ -435,6 +496,29 @@ everything is fine: not found here
             ]
         );
         assert!(!parse_output(text, true).contains(&Finding::Namespaces));
+    }
+
+    #[test]
+    fn reads_its_log_files() {
+        let dir = std::env::temp_dir().join(format!("xapp-logs-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(".local/share/App/logs")).unwrap();
+        let since = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
+        std::fs::write(
+            dir.join(".local/share/App/logs/console.txt"),
+            "steam.sh: Error: Steam now requires user namespaces to be enabled.\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("app.log"), "x: tar: command not found\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "zenity: not found\n").unwrap();
+        let mut found: Vec<Finding> = log_files(&dir, since)
+            .iter()
+            .flat_map(|t| parse_output(t, false))
+            .collect();
+        found.sort_by_key(|f| f.entry().0);
+        assert_eq!(found, [Finding::Command("tar".into()), Finding::Namespaces]);
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+        assert!(log_files(&dir, later).is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -456,6 +540,7 @@ Wed 2026-11-18 15:31:59 EST 2247 1000 1000 SIGSEGV present  /usr/bin/crash 9.6K
             app_id: "org.xeeonos.arch.vlc".into(),
             code: 0,
             seconds: 2,
+            running: true,
             findings: vec![
                 Finding::X11,
                 Finding::Own("org.mpris.MediaPlayer2.vlc".into()),

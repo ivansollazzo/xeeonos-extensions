@@ -497,12 +497,18 @@ può dare, perché lo deve dare la ricetta:
   sempre): `tar: command not found` (anche `sh: 1: zenity: not found`),
   `error while loading shared libraries: libnss3.so`, e gli errori di chi
   prova a farsi una sandbox sua senza `user_namespaces` ("No usable
-  sandbox", "setting up uid map", ...);
+  sandbox", "setting up uid map", l'helper SUID di Chromium/Electron,
+  ...);
+- lo stesso nei file di log che l'app scrive durante l'avvio nei suoi
+  dati (`*.log`, o i file di una cartella `log`/`logs`): c'è chi scrive
+  solo lì (Steam);
 - i programmi fermati dal filtro di sistema: `coredumpctl` dopo l'avvio,
   i processi dell'utente morti con `SIGSYS` (per esempio un programma a 32
   bit in un'immagine costruita senza `multilib`).
 
-`xapp run --trace` li stampa a parte ("it missed") dai rifiuti.
+`xapp run --trace` li stampa a parte ("it missed") dai rifiuti. Il
+resoconto viene scritto anche mentre l'app gira (ogni 5 secondi), così
+resta anche se la si chiude da fuori (un kill, un timeout).
 `xapp doctor` non li chiede: cerca nello snapshot dell'app (lo stesso
 database dei file di `pacman -F` che usa il wizard, in un container) i
 pacchetti che hanno `usr/bin/<comando>` o `usr/lib{,32}/<libreria>`, li
@@ -724,7 +730,7 @@ che c'è nella ricetta.
 | il permesso `audio`, ma solo ALSA (`alsa-lib` senza librerie di PulseAudio o PipeWire) | `pipewire-alsa`: nella sandbox non c'è la scheda audio, solo il socket di PipeWire |
 | quello che i programmi nominano (`/dev/video`, il portal Camera; `libpulse.so`, `libpipewire`, `libasound.so`) | i permessi `camera`, `audio` già spuntati nella lista |
 | **archivi dentro l'app** (tar, zip; più di 100 KiB): launcher che si scompattano all'avvio, come il bootstrap di Steam | vengono aperti e guardati come gli altri file: librerie che chiedono e nominano, programmi a 32 bit, permessi. Anche `xapp build` li apre: programmi a 32 bit → `multilib` nel manifest; un programma che si collega a X11 e non a Wayland → la capability `x11`; i segni di una sandbox propria (Chromium, CEF...) → `user_namespaces` |
-| dipendenze **virtuali** (`vulkan-driver`, `ttf-font`, `java-runtime`...) per cui pacman sceglierebbe da solo | una domanda per ognuna, con prima un pacchetto che l'app ha già o, se no, uno per hardware che XeeonOS supporta (mai NVIDIA, CUDA, ROCm o GPU di telefoni per primi); il nome scelto va nella ricetta |
+| dipendenze **virtuali** (`vulkan-driver`, `ttf-font`, `java-runtime`...) per cui pacman sceglierebbe da solo (lette dai database dello snapshot: cosa fornisce ogni pacchetto, contro quello che pacman installerebbe; pacman non chiede quando stampa soltanto) | una domanda per ognuna, con prima un pacchetto che l'app ha già o, se no, uno per hardware che XeeonOS supporta (mai NVIDIA, CUDA, ROCm o GPU di telefoni per primi); il nome scelto va nella ricetta |
 | pacchetti (della chiusura o opzionali) con **solo file per il sistema**: regole udev (`steam-devices`), moduli del kernel (`ntsync-autoload`), servizi o polkit | una nota nel riepilogo: dentro un'app non fanno niente, deve averli XeeonOS. Gli opzionali così non vengono proposti |
 | programmi di `base` (`tar`, `sed`, `grep`, `gzip`, `findutils`...) che l'app non ha: per regola di Arch i pacchetti non li nominano, ma gli script di avvio li chiamano (Steam si scompatta con `tar`) | quelli mancanti, con una domanda (già sì); mai systemd, pacman o il kernel |
 

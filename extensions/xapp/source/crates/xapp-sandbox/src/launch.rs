@@ -7,6 +7,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 
 use xapp_core::paths;
 use xapp_core::util::{Result, err, gid, have, uid};
@@ -128,6 +129,7 @@ pub fn run(l: &Launch) -> Result<i32> {
     )));
     fs::create_dir_all(&instance.0)?;
     let data = paths::app_data(&m.app_id);
+    let data_dir = data.clone();
     for d in [".config", ".cache", ".local/share", ".local/state"] {
         fs::create_dir_all(data.join(d))?;
     }
@@ -315,7 +317,8 @@ pub fn run(l: &Launch) -> Result<i32> {
         eprintln!("xapp: {}", cmd.join(" "));
     }
     let started = std::time::Instant::now();
-    let since = std::time::SystemTime::now()
+    let since_time = std::time::SystemTime::now();
+    let since = since_time
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
@@ -329,9 +332,11 @@ pub fn run(l: &Launch) -> Result<i32> {
     let mut child = command
         .spawn()
         .map_err(|e| err(format!("cannot start {}: {e}", cmd[0])))?;
-    let said = child.stderr.take().map(|mut pipe| {
+    // What it said, kept (the first 4 MiB are enough to read).
+    let said: Arc<Mutex<Vec<u8>>> = Arc::default();
+    if let Some(mut pipe) = child.stderr.take() {
+        let kept = said.clone();
         std::thread::spawn(move || {
-            let mut kept = Vec::new();
             let mut buf = [0u8; 8192];
             let mut to = std::io::stderr();
             while let Ok(n) = pipe.read(&mut buf) {
@@ -339,18 +344,18 @@ pub fn run(l: &Launch) -> Result<i32> {
                     break;
                 }
                 let _ = to.write_all(&buf[..n]);
-                // The first 4 MiB are enough to read.
-                if kept.len() < 4 << 20 {
-                    kept.extend_from_slice(&buf[..n]);
+                if let Ok(mut k) = kept.lock()
+                    && k.len() < 4 << 20
+                {
+                    k.extend_from_slice(&buf[..n]);
                 }
             }
-            String::from_utf8_lossy(&kept).into_owned()
-        })
-    });
-    let status = child.wait()?;
-    let code = status.code().unwrap_or(1);
-    drop(proxy);
-    if l.trace {
+        });
+    }
+    // What the trace has seen so far: written while it runs too (every few
+    // seconds), so that a run stopped from outside (closed, killed, a
+    // timeout) leaves its report.
+    let report = |running: bool, code: i32| {
         let mut findings = Vec::new();
         if probe.as_ref().is_some_and(Probe::knocked) {
             findings.push(Finding::X11);
@@ -363,19 +368,14 @@ pub fn run(l: &Launch) -> Result<i32> {
                 &fs::read_to_string(log).unwrap_or_default(),
             ));
         }
-        // Programs that run on after it (in the background) may still hold
-        // the pipe: what was said until now is enough.
-        if let Some(said) = said
-            && (0..20).any(|_| {
-                let done = said.is_finished();
-                if !done {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                done
-            })
-            && let Ok(text) = said.join()
-        {
-            findings.extend(trace::parse_output(&text, nested));
+        let text = said
+            .lock()
+            .map(|k| String::from_utf8_lossy(&k).into_owned())
+            .unwrap_or_default();
+        findings.extend(trace::parse_output(&text, nested));
+        // What it wrote in its own log files (some write there only).
+        for log in trace::log_files(&data_dir, since_time) {
+            findings.extend(trace::parse_output(&log, nested));
         }
         // Programs the system filter stopped dump core with SIGSYS.
         if have("coredumpctl")
@@ -390,13 +390,41 @@ pub fn run(l: &Launch) -> Result<i32> {
                 uid(),
             ));
         }
-        findings.dedup();
-        trace::save(&Report {
+        let mut unique: Vec<Finding> = Vec::new();
+        for f in findings {
+            if !unique.contains(&f) {
+                unique.push(f);
+            }
+        }
+        Report {
             app_id: m.app_id.clone(),
             code,
             seconds: started.elapsed().as_secs(),
-            findings,
-        })?;
+            running,
+            findings: unique,
+        }
+    };
+    let mut noted = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if l.trace && noted.elapsed() >= std::time::Duration::from_secs(5) {
+            let _ = trace::save(&report(true, 0));
+            noted = std::time::Instant::now();
+        }
+    };
+    let code = status.code().unwrap_or(1);
+    if l.trace {
+        // Its last words (the pipe may still be held by programs it left
+        // running in the background: no waiting for them).
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let r = report(false, code);
+        drop(proxy);
+        trace::save(&r)?;
+    } else {
+        drop(proxy);
     }
     drop(image);
     drop(instance);

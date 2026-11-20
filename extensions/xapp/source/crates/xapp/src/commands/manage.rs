@@ -240,10 +240,17 @@ pub fn doctor(args: &[String]) -> Result<u8> {
         );
         return Ok(1);
     };
-    println!(
-        "Last traced run of {name}: ended with code {} after {} s.",
-        report.code, report.seconds
-    );
+    if report.running {
+        println!(
+            "Last traced run of {name}: stopped from outside after {} s, while it ran.",
+            report.seconds
+        );
+    } else {
+        println!(
+            "Last traced run of {name}: ended with code {} after {} s.",
+            report.code, report.seconds
+        );
+    }
     let missing: Vec<&Finding> = report.findings.iter().filter(|f| f.is_missing()).collect();
     if !missing.is_empty() {
         print_missing(&name, m, &missing);
