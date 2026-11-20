@@ -207,16 +207,27 @@ providers_from() {
         FILENAME == ARGV[2] { inc[$1] = 1; order[++n] = $1; next }
         FILENAME == ARGV[3] { if ($1 != "") target[$1] = 1; next }
         END {
-            # Wanted by name: asked for, or a dependency named after a package.
-            for (t in target) if (t in names) byname[t] = 1
+            # Dependencies no package is named after.
             for (i = 1; i <= n; i++) {
                 k = split(deps[order[i]], w, " ")
-                for (j = 1; j <= k; j++) {
-                    if (w[j] in names) byname[w[j]] = 1
-                    else virt[w[j]] = 1
-                }
+                for (j = 1; j <= k; j++) if (!(w[j] in names)) virt[w[j]] = 1
             }
             for (t in target) if (!(t in names)) virt[t] = 1
+            # The packages pacman may have taken for one of them: what they
+            # depend on does not count (lib32-nvidia-utils, taken for
+            # lib32-vulkan-driver, wants nvidia-utils by name).
+            for (v in virt) {
+                k = split(prov[v], c, " ")
+                if (k >= 2) for (j = 1; j <= k; j++) picked[c[j]] = 1
+            }
+            # Wanted by name: asked for, or a dependency named after a
+            # package (of a package not taken for a virtual one).
+            for (t in target) if (t in names) byname[t] = 1
+            for (i = 1; i <= n; i++) {
+                if ((order[i] in picked) && !(order[i] in target)) continue
+                k = split(deps[order[i]], w, " ")
+                for (j = 1; j <= k; j++) if (w[j] in names) byname[w[j]] = 1
+            }
             for (v in virt) {
                 k = split(prov[v], c, " ")
                 if (k < 2) continue

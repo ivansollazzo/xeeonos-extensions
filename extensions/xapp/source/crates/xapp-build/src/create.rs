@@ -1726,7 +1726,8 @@ pub fn create(o: &Options) -> Result<PathBuf> {
         questions.push(q);
     }
     // Virtual packages: one question each, never pacman's own choice.
-    let have: Vec<String> = f.closure.iter().chain(&f.packages).cloned().collect();
+    // (Not the closure: there the candidates are pacman's own choices.)
+    let have: Vec<String> = f.packages.iter().chain(&f.gpu32).cloned().collect();
     let virtuals: Vec<(String, Vec<String>)> = f
         .providers
         .iter()
